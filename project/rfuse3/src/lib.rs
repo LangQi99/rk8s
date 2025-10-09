@@ -25,6 +25,7 @@
     target_os = "macos"
 ))]
 use std::io;
+use std::io::ErrorKind;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 #[cfg(any(
