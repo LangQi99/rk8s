@@ -321,12 +321,12 @@ impl BlockFuseConnection {
             };
             let fd = if let Some(ControlMessageOwned::ScmRights(fds)) = cmsgs.next() {
                 if fds.is_empty() {
-                    return Err(io::Error::new(ErrorKind::Other, "no fuse fd"));
+                    return Err(io::Error::new(io::ErrorKind::Other, "no fuse fd"));
                 }
 
                 fds[0]
             } else {
-                return Err(io::Error::new(ErrorKind::Other, "get fuse fd failed"));
+                return Err(io::Error::new(io::ErrorKind::Other, "get fuse fd failed"));
             };
 
             Ok(fd)

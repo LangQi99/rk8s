@@ -1,0 +1,22 @@
+[package]
+name = "rfuse3-example"
+version = "0.1.0"
+edition = "2021"
+authors = ["rk8s-dev team"]
+description = "rfuse3 使用示例 - 内存文件系统"
+
+[workspace]
+
+[[bin]]
+name = "minimal_rfuse3_example"
+path = "minimal_rfuse3_example.rs"
+
+[dependencies]
+rfuse3 = { path = "../rfuse3" }
+tokio = { version = "1.36", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+libc = "0.2"

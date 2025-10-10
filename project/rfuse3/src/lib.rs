@@ -249,7 +249,7 @@ fn find_macfuse_mount() -> io::Result<PathBuf> {
         ))
     } else {
         Err(io::Error::new(
-            ErrorKind::NotFound,
+            io::ErrorKind::NotFound,
             "macfuse mount binary not found, Please install macfuse first.",
         ))
     }
