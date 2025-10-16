@@ -5394,6 +5394,7 @@ dependencies = [
  "async-process 2.5.0",
  "bincode",
  "bytes",
+ "clap",
  "futures-channel",
  "futures-util",
  "libc",
@@ -5402,6 +5403,7 @@ dependencies = [
  "slab",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "trait-make",
  "which",
 ]

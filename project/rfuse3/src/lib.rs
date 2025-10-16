@@ -24,7 +24,7 @@
     all(target_os = "linux", feature = "unprivileged"),
     target_os = "macos"
 ))]
-use std::io;
+use std::io::{self, ErrorKind};
 #[cfg(target_os = "macos")]
 use std::path::Path;
 #[cfg(any(
