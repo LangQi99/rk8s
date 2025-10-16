@@ -1,8 +1,9 @@
-mkdir -p /tmp/vfs
+MOUNTPOINT="/tmp/vfs0"
+mkdir -p "$MOUNTPOINT"
 cargo build --example vfs
-cargo run --example vfs -- --mountpoint /tmp/vfs &
+cargo run --example vfs -- --mountpoint "$MOUNTPOINT" &
 sleep 2
-ls -l /tmp/vfs
-cat /tmp/vfs/hello.txt
-stat /tmp/vfs
-umount /tmp/vfs
+ls -l "$MOUNTPOINT"
+cat "$MOUNTPOINT/hello.txt"
+stat "$MOUNTPOINT"
+umount "$MOUNTPOINT"

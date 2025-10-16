@@ -47,6 +47,7 @@ impl Filesystem for MinimalFileSystem {
                 atime: SystemTime::now().into(),
                 mtime: SystemTime::now().into(),
                 ctime: SystemTime::now().into(),
+                #[cfg(target_os = "macos")]
                 crtime: SystemTime::now().into(),
                 kind: FileType::RegularFile,
                 perm: 0o644,
@@ -55,6 +56,7 @@ impl Filesystem for MinimalFileSystem {
                 gid: 0,
                 rdev: 0,
                 blksize: 4096,
+                #[cfg(target_os = "macos")]
                 flags: 0,
             };
 
@@ -86,6 +88,7 @@ impl Filesystem for MinimalFileSystem {
                 atime: SystemTime::now().into(),
                 mtime: SystemTime::now().into(),
                 ctime: SystemTime::now().into(),
+                #[cfg(target_os = "macos")]
                 crtime: SystemTime::now().into(),
                 kind: FileType::Directory,
                 perm: 0o755,
@@ -94,6 +97,7 @@ impl Filesystem for MinimalFileSystem {
                 gid: 0,
                 rdev: 0,
                 blksize: 4096,
+                #[cfg(target_os = "macos")]
                 flags: 0,
             };
             Ok(ReplyAttr {
@@ -109,6 +113,7 @@ impl Filesystem for MinimalFileSystem {
                 atime: SystemTime::now().into(),
                 mtime: SystemTime::now().into(),
                 ctime: SystemTime::now().into(),
+                #[cfg(target_os = "macos")]
                 crtime: SystemTime::now().into(),
                 kind: FileType::RegularFile,
                 perm: 0o644,
@@ -117,6 +122,7 @@ impl Filesystem for MinimalFileSystem {
                 gid: 0,
                 rdev: 0,
                 blksize: 4096,
+                #[cfg(target_os = "macos")]
                 flags: 0,
             };
             Ok(ReplyAttr {
@@ -147,13 +153,13 @@ impl Filesystem for MinimalFileSystem {
         _req: Request,
         parent: u64,
         _fh: u64,
-        _offset: i64,
+        offset: i64,
     ) -> Result<ReplyDirectory<impl Stream<Item = Result<DirectoryEntry>> + Send + 'a>> {
-        debug!("读取目录: parent={}", parent);
+        debug!("读取目录: parent={}, offset={}", parent, offset);
 
         if parent == 1 {
-            // 根目录，返回 hello.txt
-            let entries = vec![
+            // 根目录，根据 offset 返回相应的条目
+            let all_entries = vec![
                 Ok(DirectoryEntry {
                     inode: 1,
                     offset: 1,
@@ -174,7 +180,19 @@ impl Filesystem for MinimalFileSystem {
                 }),
             ];
 
-            let stream = futures_util::stream::iter(entries);
+            // 根据 offset 过滤条目
+            let filtered_entries: Vec<_> = all_entries
+                .into_iter()
+                .filter(|entry| {
+                    if let Ok(entry) = entry {
+                        entry.offset > offset
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+
+            let stream = futures_util::stream::iter(filtered_entries);
             Ok(ReplyDirectory { entries: stream })
         } else {
             Err(libc::ENOENT.into())
@@ -186,15 +204,15 @@ impl Filesystem for MinimalFileSystem {
         _req: Request,
         parent: u64,
         _fh: u64,
-        _offset: u64,
+        offset: u64,
         _lock_owner: u64,
     ) -> Result<ReplyDirectoryPlus<impl Stream<Item = Result<DirectoryEntryPlus>> + Send + 'a>>
     {
-        debug!("读取目录plus: parent={}", parent);
+        debug!("读取目录plus: parent={}, offset={}", parent, offset);
 
         if parent == 1 {
-            // 根目录，返回 hello.txt 及其属性
-            let entries = vec![
+            // 根目录，根据 offset 返回相应的条目及其属性
+            let all_entries = vec![
                 Ok(DirectoryEntryPlus {
                     inode: 1,
                     generation: 0,
@@ -208,6 +226,7 @@ impl Filesystem for MinimalFileSystem {
                         atime: SystemTime::now().into(),
                         mtime: SystemTime::now().into(),
                         ctime: SystemTime::now().into(),
+                        #[cfg(target_os = "macos")]
                         crtime: SystemTime::now().into(),
                         kind: FileType::Directory,
                         perm: 0o755,
@@ -216,6 +235,7 @@ impl Filesystem for MinimalFileSystem {
                         gid: 0,
                         rdev: 0,
                         blksize: 4096,
+                        #[cfg(target_os = "macos")]
                         flags: 0,
                     },
                     entry_ttl: Duration::from_secs(1),
@@ -234,6 +254,7 @@ impl Filesystem for MinimalFileSystem {
                         atime: SystemTime::now().into(),
                         mtime: SystemTime::now().into(),
                         ctime: SystemTime::now().into(),
+                        #[cfg(target_os = "macos")]
                         crtime: SystemTime::now().into(),
                         kind: FileType::Directory,
                         perm: 0o755,
@@ -242,6 +263,7 @@ impl Filesystem for MinimalFileSystem {
                         gid: 0,
                         rdev: 0,
                         blksize: 4096,
+                        #[cfg(target_os = "macos")]
                         flags: 0,
                     },
                     entry_ttl: Duration::from_secs(1),
@@ -260,6 +282,7 @@ impl Filesystem for MinimalFileSystem {
                         atime: SystemTime::now().into(),
                         mtime: SystemTime::now().into(),
                         ctime: SystemTime::now().into(),
+                        #[cfg(target_os = "macos")]
                         crtime: SystemTime::now().into(),
                         kind: FileType::RegularFile,
                         perm: 0o644,
@@ -268,6 +291,7 @@ impl Filesystem for MinimalFileSystem {
                         gid: 0,
                         rdev: 0,
                         blksize: 4096,
+                        #[cfg(target_os = "macos")]
                         flags: 0,
                     },
                     entry_ttl: Duration::from_secs(1),
@@ -275,7 +299,19 @@ impl Filesystem for MinimalFileSystem {
                 }),
             ];
 
-            let stream = futures_util::stream::iter(entries);
+            // 根据 offset 过滤条目
+            let filtered_entries: Vec<_> = all_entries
+                .into_iter()
+                .filter(|entry| {
+                    if let Ok(entry) = entry {
+                        entry.offset > offset as i64
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+
+            let stream = futures_util::stream::iter(filtered_entries);
             Ok(ReplyDirectoryPlus { entries: stream })
         } else {
             Err(libc::ENOENT.into())
@@ -371,15 +407,43 @@ async fn main() -> Result<()> {
 
     info!("开始挂载最小化文件系统到: {}", args.mountpoint);
 
-    // 挂载文件系统
-    // 在 macOS 上，mount() 内部直接调用 mount_with_unprivileged()
-    let mut mount_handle = Session::new(mount_options)
-        .mount(fs, mount_path)
-        .await
-        .map_err(|e| {
-            eprintln!("挂载失败: {}", e);
-            e
-        })?;
+    // 挂载文件系统 - 根据平台和特性选择挂载方式
+    let mut mount_handle = {
+        #[cfg(all(target_os = "linux", feature = "unprivileged"))]
+        {
+            // Linux 下使用非特权挂载
+            Session::new(mount_options)
+                .mount_with_unprivileged(fs, mount_path)
+                .await
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS 下使用非特权挂载
+            Session::new(mount_options)
+                .mount_with_unprivileged(fs, mount_path)
+                .await
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            // FreeBSD 下使用非特权挂载
+            Session::new(mount_options)
+                .mount_with_unprivileged(fs, mount_path)
+                .await
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", feature = "unprivileged"),
+            target_os = "macos",
+            target_os = "freebsd"
+        )))]
+        {
+            // 其他情况使用普通挂载
+            Session::new(mount_options).mount(fs, mount_path).await
+        }
+    }
+    .map_err(|e| {
+        eprintln!("挂载失败: {}", e);
+        e
+    })?;
 
     info!("文件系统已成功挂载！");
     info!("您可以尝试以下操作：");
