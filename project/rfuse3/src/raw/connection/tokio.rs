@@ -3,9 +3,9 @@ use std::env;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::Write;
+use std::io::{self, ErrorKind};
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::{Deref, DerefMut};
 #[cfg(any(
