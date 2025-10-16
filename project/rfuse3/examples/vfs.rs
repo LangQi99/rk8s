@@ -372,6 +372,39 @@ impl Filesystem for MinimalFileSystem {
             frsize: 4096, // 片段大小
         })
     }
+
+    async fn access(&self, _req: Request, inode: u64, mask: u32) -> Result<()> {
+        debug!("检查访问权限: inode={}, mask={}", inode, mask);
+
+        // 允许所有访问权限检查
+        // mask 可能包含 F_OK(0), R_OK(4), W_OK(2), X_OK(1)
+        if inode == 1 || inode == 2 {
+            Ok(())
+        } else {
+            Err(libc::ENOENT.into())
+        }
+    }
+
+    async fn getxattr(
+        &self,
+        _req: Request,
+        inode: u64,
+        name: &OsStr,
+        size: u32,
+    ) -> Result<ReplyXAttr> {
+        debug!(
+            "获取扩展属性: inode={}, name={:?}, size={}",
+            inode, name, size
+        );
+        // 不支持扩展属性
+        Err(libc::ENODATA.into())
+    }
+
+    async fn listxattr(&self, _req: Request, inode: u64, size: u32) -> Result<ReplyXAttr> {
+        debug!("列出扩展属性: inode={}, size={}", inode, size);
+        // 返回空的扩展属性列表
+        Ok(ReplyXAttr::Data(Vec::new().into()))
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -396,7 +429,8 @@ async fn main() -> Result<()> {
 
     // 配置挂载选项
     let mut mount_options = MountOptions::default();
-    mount_options.force_readdir_plus(true);
+    // 注释掉 force_readdir_plus 看看是否有影响
+    // mount_options.force_readdir_plus(true);
 
     // 获取当前用户 ID
     let uid = unsafe { libc::getuid() };
