@@ -5,11 +5,32 @@
 
 use vm_memory::ByteValued;
 
+// Platform-specific type aliases for 64-bit types
+// macOS doesn't have separate 64-bit types as it's 64-bit by default
+#[cfg(target_os = "macos")]
+pub type stat64 = libc::stat;
+#[cfg(target_os = "macos")]
+pub type off64_t = libc::off_t;
+#[cfg(target_os = "macos")]
+pub type ino64_t = libc::ino_t;
+#[cfg(target_os = "macos")]
+pub type statvfs64 = libc::statvfs;
+
+// Linux uses separate 64-bit types
+#[cfg(target_os = "linux")]
+pub type stat64 = libc::stat64;
+#[cfg(target_os = "linux")]
+pub type off64_t = libc::off64_t;
+#[cfg(target_os = "linux")]
+pub type ino64_t = libc::ino64_t;
+#[cfg(target_os = "linux")]
+pub type statvfs64 = libc::statvfs64;
+
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LinuxDirent64 {
-    pub d_ino: libc::ino64_t,
-    pub d_off: libc::off64_t,
+    pub d_ino: ino64_t,
+    pub d_off: off64_t,
     pub d_reclen: libc::c_ushort,
     pub d_ty: libc::c_uchar,
 }

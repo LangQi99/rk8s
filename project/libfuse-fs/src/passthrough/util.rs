@@ -12,13 +12,36 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use libc::stat64;
+use super::os_compat::{ino64_t, stat64};
 use rfuse3::raw::reply::FileAttr;
 use rfuse3::{FileType, Timestamp};
 use tracing::error;
 
 use super::inode_store::InodeId;
 use super::{CURRENT_DIR_CSTR, EMPTY_CSTR, MAX_HOST_INO, PARENT_DIR_CSTR};
+
+// Platform-specific constants
+// Linux-specific flags that don't exist on macOS
+#[cfg(target_os = "linux")]
+pub const O_PATH_OR_RDONLY: i32 = libc::O_PATH;
+#[cfg(target_os = "macos")]
+pub const O_PATH_OR_RDONLY: i32 = libc::O_RDONLY;
+
+#[cfg(target_os = "linux")]
+pub const AT_EMPTY_PATH_FLAG: i32 = libc::AT_EMPTY_PATH;
+#[cfg(target_os = "macos")]
+pub const AT_EMPTY_PATH_FLAG: i32 = 0; // macOS doesn't support AT_EMPTY_PATH
+
+#[cfg(target_os = "linux")]
+pub const O_DIRECT_FLAG: i32 = libc::O_DIRECT;
+#[cfg(target_os = "macos")]
+pub const O_DIRECT_FLAG: i32 = 0; // macOS doesn't support O_DIRECT
+
+// System call numbers
+#[cfg(target_os = "linux")]
+pub const SYS_GETDENTS64: i32 = libc::SYS_getdents64;
+#[cfg(target_os = "macos")]
+pub const SYS_GETDENTS64: i32 = 0; // Not used on macOS, we use getdirentries instead
 
 /// the 56th bit used to set the inode to 1 indicates virtual inode
 const VIRTUAL_INODE_FLAG: u64 = 1 << 55;
@@ -49,7 +72,7 @@ impl UniqueInodeGenerator {
         }
     }
 
-    pub fn get_unique_inode(&self, id: &InodeId) -> io::Result<libc::ino64_t> {
+    pub fn get_unique_inode(&self, id: &InodeId) -> io::Result<ino64_t> {
         let unique_id = {
             let id: DevMntIDPair = DevMntIDPair(id.dev, id.mnt);
             let mut id_map_guard = self.dev_mntid_map.lock().unwrap();
@@ -175,20 +198,32 @@ pub fn reopen_fd_through_proc(
     )
 }
 
-pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<libc::stat64> {
+pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
     // Safe because this is a constant value and a valid C string.
     let pathname =
         path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
-    let mut st = MaybeUninit::<libc::stat64>::zeroed();
+    let mut st = MaybeUninit::<stat64>::zeroed();
     let dir_fd = dir.as_raw_fd();
     // Safe because the kernel will only write data in `st` and we check the return value.
     let res = unsafe {
-        libc::fstatat64(
-            dir_fd,
-            pathname.as_ptr(),
-            st.as_mut_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        )
+        #[cfg(target_os = "linux")]
+        {
+            libc::fstatat64(
+                dir_fd,
+                pathname.as_ptr(),
+                st.as_mut_ptr(),
+                AT_EMPTY_PATH_FLAG | libc::AT_SYMLINK_NOFOLLOW,
+            )
+        }
+        #[cfg(target_os = "macos")]
+        {
+            libc::fstatat(
+                dir_fd,
+                pathname.as_ptr(),
+                st.as_mut_ptr(),
+                AT_EMPTY_PATH_FLAG | libc::AT_SYMLINK_NOFOLLOW,
+            )
+        }
     };
     if res >= 0 {
         // Safe because the kernel guarantees that the struct is now fully initialized.
@@ -202,12 +237,14 @@ pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<libc::stat
 pub fn is_safe_inode(mode: u32) -> bool {
     // Only regular files and directories are considered safe to be opened from the file
     // server without O_PATH.
-    matches!(mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
+    let mode_val = mode as libc::mode_t;
+    matches!(mode_val & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR)
 }
 
 /// Returns true if the mode is for a directory.
 pub fn is_dir(mode: u32) -> bool {
-    (mode & libc::S_IFMT) == libc::S_IFDIR
+    let mode_val = mode as libc::mode_t;
+    (mode_val & libc::S_IFMT) == libc::S_IFDIR
 }
 
 pub fn ebadf() -> io::Error {
@@ -236,7 +273,7 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         ctime: Timestamp::new(stat.st_ctime, stat.st_ctime_nsec.try_into().unwrap()),
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
-        kind: filetype_from_mode(stat.st_mode),
+        kind: filetype_from_mode(stat.st_mode.into()),
         perm: stat.st_mode as u16 & 0o7777,
         nlink: stat.st_nlink as u32,
         uid: stat.st_uid,
@@ -249,7 +286,8 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
 }
 
 pub fn filetype_from_mode(st_mode: u32) -> FileType {
-    let st_mode = st_mode & 0xfff000;
+    let st_mode_val = st_mode as libc::mode_t;
+    let st_mode = st_mode_val & libc::S_IFMT;
     match st_mode {
         libc::S_IFIFO => FileType::NamedPipe,
         libc::S_IFCHR => FileType::CharDevice,
@@ -361,6 +399,231 @@ pub fn osstr_to_cstr(os_str: &OsStr) -> Result<CString, std::ffi::NulError> {
 //     // lose the capability to change the gid.  However changing back can happen in any order.
 //     ScopedGid::new(gid).and_then(|gid| Ok((ScopedUid::new(uid)?, gid)))
 // }
+
+// Platform-specific system call wrappers
+#[cfg(target_os = "linux")]
+pub fn do_fdatasync(fd: libc::c_int) -> io::Result<()> {
+    let ret = unsafe { libc::fdatasync(fd) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn do_fdatasync(fd: libc::c_int) -> io::Result<()> {
+    // macOS doesn't have fdatasync, use fsync instead
+    let ret = unsafe { libc::fsync(fd) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn do_renameat2(
+    olddirfd: libc::c_int,
+    oldpath: *const libc::c_char,
+    newdirfd: libc::c_int,
+    newpath: *const libc::c_char,
+    flags: libc::c_uint,
+) -> io::Result<()> {
+    let ret = unsafe { libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn do_renameat2(
+    olddirfd: libc::c_int,
+    oldpath: *const libc::c_char,
+    newdirfd: libc::c_int,
+    newpath: *const libc::c_char,
+    _flags: libc::c_uint,
+) -> io::Result<()> {
+    // macOS doesn't have renameat2, use renameat instead
+    let ret = unsafe { libc::renameat(olddirfd, oldpath, newdirfd, newpath) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn do_fallocate(
+    fd: libc::c_int,
+    mode: libc::c_int,
+    offset: libc::off64_t,
+    len: libc::off64_t,
+) -> io::Result<()> {
+    let ret = unsafe { libc::fallocate64(fd, mode, offset, len) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn do_fallocate(
+    fd: libc::c_int,
+    mode: libc::c_int,
+    offset: libc::off_t,
+    len: libc::off_t,
+) -> io::Result<()> {
+    // macOS uses fcntl with F_PREALLOCATE
+    use libc::{F_PREALLOCATE, fcntl};
+
+    #[repr(C)]
+    struct fstore_t {
+        fst_flags: u32,
+        fst_posmode: i32,
+        fst_offset: libc::off_t,
+        fst_length: libc::off_t,
+        fst_bytesalloc: libc::off_t,
+    }
+
+    let fstore = fstore_t {
+        fst_flags: 0,
+        fst_posmode: 0, // F_PEOFPOSMODE
+        fst_offset: offset,
+        fst_length: len,
+        fst_bytesalloc: 0,
+    };
+
+    let ret = unsafe { fcntl(fd, F_PREALLOCATE, &fstore) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn do_lseek64(
+    fd: libc::c_int,
+    offset: libc::off64_t,
+    whence: libc::c_int,
+) -> io::Result<libc::off64_t> {
+    let ret = unsafe { libc::lseek64(fd, offset, whence) };
+    if ret == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(ret)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn do_lseek64(
+    fd: libc::c_int,
+    offset: libc::off_t,
+    whence: libc::c_int,
+) -> io::Result<libc::off_t> {
+    let ret = unsafe { libc::lseek(fd, offset, whence) };
+    if ret == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(ret)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn do_fstatvfs(fd: libc::c_int, buf: *mut libc::statvfs64) -> io::Result<()> {
+    let ret = unsafe { libc::fstatvfs64(fd, buf) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn do_fstatvfs(fd: libc::c_int, buf: *mut libc::statvfs) -> io::Result<()> {
+    let ret = unsafe { libc::fstatvfs(fd, buf) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+// Platform-specific xattr API wrappers
+// macOS xattr functions have additional parameters compared to Linux
+#[cfg(target_os = "linux")]
+pub unsafe fn sys_getxattr(
+    path: *const libc::c_char,
+    name: *const libc::c_char,
+    value: *mut libc::c_void,
+    size: libc::size_t,
+) -> libc::ssize_t {
+    libc::getxattr(path, name, value, size)
+}
+
+#[cfg(target_os = "macos")]
+pub unsafe fn sys_getxattr(
+    path: *const libc::c_char,
+    name: *const libc::c_char,
+    value: *mut libc::c_void,
+    size: libc::size_t,
+) -> libc::ssize_t {
+    unsafe { libc::getxattr(path, name, value, size, 0, 0) } // position=0, options=0
+}
+
+#[cfg(target_os = "linux")]
+pub unsafe fn sys_setxattr(
+    path: *const libc::c_char,
+    name: *const libc::c_char,
+    value: *const libc::c_void,
+    size: libc::size_t,
+    flags: libc::c_int,
+) -> libc::c_int {
+    libc::setxattr(path, name, value, size, flags)
+}
+
+#[cfg(target_os = "macos")]
+pub unsafe fn sys_setxattr(
+    path: *const libc::c_char,
+    name: *const libc::c_char,
+    value: *const libc::c_void,
+    size: libc::size_t,
+    flags: libc::c_int,
+) -> libc::c_int {
+    unsafe { libc::setxattr(path, name, value, size, 0, flags) } // position=0
+}
+
+#[cfg(target_os = "linux")]
+pub unsafe fn sys_listxattr(
+    path: *const libc::c_char,
+    list: *mut libc::c_char,
+    size: libc::size_t,
+) -> libc::ssize_t {
+    libc::listxattr(path, list, size)
+}
+
+#[cfg(target_os = "macos")]
+pub unsafe fn sys_listxattr(
+    path: *const libc::c_char,
+    list: *mut libc::c_char,
+    size: libc::size_t,
+) -> libc::ssize_t {
+    unsafe { libc::listxattr(path, list, size, 0) } // options=0
+}
+
+#[cfg(target_os = "linux")]
+pub unsafe fn sys_removexattr(path: *const libc::c_char, name: *const libc::c_char) -> libc::c_int {
+    libc::removexattr(path, name)
+}
+
+#[cfg(target_os = "macos")]
+pub unsafe fn sys_removexattr(path: *const libc::c_char, name: *const libc::c_char) -> libc::c_int {
+    unsafe { libc::removexattr(path, name, 0) } // options=0
+}
 
 #[cfg(test)]
 mod tests {

@@ -5,6 +5,7 @@ use crate::overlayfs::HandleData;
 use crate::overlayfs::RealHandle;
 use crate::overlayfs::{AtomicU64, CachePolicy};
 use crate::util::open_options::OpenOptions;
+use crate::passthrough::util::O_DIRECT_FLAG;
 use rfuse3::raw::prelude::*;
 use rfuse3::*;
 use std::ffi::OsStr;
@@ -816,7 +817,7 @@ impl Filesystem for OverlayFs {
 
         let mut flags: i32 = flags as i32;
         flags |= libc::O_NOFOLLOW;
-        flags &= !libc::O_DIRECT;
+        flags &= !O_DIRECT_FLAG;
         if self.config.writeback {
             if flags & libc::O_ACCMODE == libc::O_WRONLY {
                 flags &= !libc::O_ACCMODE;

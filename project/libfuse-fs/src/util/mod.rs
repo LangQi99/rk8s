@@ -4,7 +4,7 @@ use tracing::error;
 
 use std::{fmt::Display, path::PathBuf};
 
-use libc::stat64;
+use crate::passthrough::os_compat::stat64;
 use rfuse3::{FileType, Timestamp, raw::reply::FileAttr};
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +64,7 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         ctime: Timestamp::new(stat.st_ctime, stat.st_ctime_nsec.try_into().unwrap()),
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
-        kind: filetype_from_mode(stat.st_mode),
+        kind: filetype_from_mode(stat.st_mode.into()),
         perm: stat.st_mode as u16 & 0o7777,
         nlink: stat.st_nlink as u32,
         uid: stat.st_uid,
@@ -78,6 +78,8 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
 
 pub fn filetype_from_mode(st_mode: u32) -> FileType {
     let st_mode = st_mode & 0xfff000;
+    let st_mode_val = st_mode as libc::mode_t;
+    let st_mode = st_mode_val & libc::S_IFMT;
     match st_mode {
         libc::S_IFIFO => FileType::NamedPipe,
         libc::S_IFCHR => FileType::CharDevice,

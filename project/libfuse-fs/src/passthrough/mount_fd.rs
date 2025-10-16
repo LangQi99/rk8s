@@ -13,7 +13,7 @@ use tracing::debug;
 
 use super::MOUNT_INFO_FILE;
 use super::statx::statx;
-use super::util::{einval, is_safe_inode};
+use super::util::{einval, is_safe_inode, O_PATH_OR_RDONLY};
 
 /// Type alias for mount id.
 pub type MountId = u64;
@@ -128,7 +128,7 @@ impl MountFds {
                     .prefix(format!("Failed to convert \"{mount_point}\" to a CString"))
             })?;
 
-            let mount_point_fd = unsafe { libc::open(c_mount_point.as_ptr(), libc::O_PATH) };
+            let mount_point_fd = unsafe { libc::open(c_mount_point.as_ptr(), O_PATH_OR_RDONLY) };
             if mount_point_fd < 0 {
                 return Err(self
                     .error_for(mount_id, io::Error::last_os_error())
@@ -140,7 +140,7 @@ impl MountFds {
 
             // Ensure that we can safely reopen `mount_point_path` with `O_RDONLY`
             let file_type = st_mode & libc::S_IFMT;
-            if !is_safe_inode(file_type) {
+            if !is_safe_inode(file_type.into()) {
                 return Err(self
                     .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
                     .set_desc(format!(
@@ -152,7 +152,7 @@ impl MountFds {
             let file = reopen_fd(
                 mount_point_fd.as_raw_fd(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                st_mode,
+                st_mode.into(),
             )
             .map_err(|e| {
                 self.error_for(mount_id, e).prefix(format!(

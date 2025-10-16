@@ -7,7 +7,20 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::io::AsRawFd;
 
+// Platform-specific imports
+#[cfg(target_os = "linux")]
 use libc::{STATX_BTIME, statx_timestamp};
+
+#[cfg(target_os = "macos")]
+use super::os_compat::stat64;
+
+// Define statx_timestamp for macOS
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
+pub struct statx_timestamp {
+    pub tv_sec: i64,
+    pub tv_nsec: i32,
+}
 
 use super::{
     EMPTY_CSTR,
@@ -18,7 +31,7 @@ use crate::passthrough::file_handle::FileHandle;
 pub type MountId = u64;
 
 pub struct StatExt {
-    pub st: libc::stat64,
+    pub st: stat64,
     pub mnt_id: MountId,
     // Using Option<> for easier testing.
     pub btime: Option<statx_timestamp>,
@@ -34,14 +47,14 @@ pub struct StatExt {
  * to return it.)
  */
 trait SafeStatXAccess {
-    fn stat64(&self) -> Option<libc::stat64>;
+    fn stat64(&self) -> Option<stat64>;
     fn mount_id(&self) -> Option<MountId>;
 }
 
 impl SafeStatXAccess for statx_st {
-    fn stat64(&self) -> Option<libc::stat64> {
+    fn stat64(&self) -> Option<stat64> {
         fn makedev(maj: libc::c_uint, min: libc::c_uint) -> libc::dev_t {
-            libc::makedev(maj, min)
+            libc::makedev(maj as libc::c_int, min as libc::c_int)
         }
 
         if self.stx_mask & STATX_BASIC_STATS != 0 {
@@ -53,7 +66,7 @@ impl SafeStatXAccess for statx_st {
              * So we take a zeroed struct and set what we can.
              * (Zero in all fields is wrong, but safe.)
              */
-            let mut st = unsafe { MaybeUninit::<libc::stat64>::zeroed().assume_init() };
+            let mut st = unsafe { MaybeUninit::<stat64>::zeroed().assume_init() };
 
             st.st_dev = makedev(self.stx_dev_major, self.stx_dev_minor);
             st.st_ino = self.stx_ino;
@@ -108,11 +121,20 @@ fn do_statx(
     mask: libc::c_uint,
     statxbuf: *mut statx_st,
 ) -> libc::c_int {
-    (unsafe { libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) })
-        as libc::c_int
+    #[cfg(target_os = "linux")]
+    {
+        (unsafe { libc::syscall(libc::SYS_statx, dirfd, pathname, flags, mask, statxbuf) })
+            as libc::c_int
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS doesn't have statx, return -1 to indicate not supported
+        -1
+    }
 }
 
 /// Execute `statx()` to get extended status with mount id.
+#[cfg(target_os = "linux")]
 pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     let mut stx_ui = MaybeUninit::<statx_st>::zeroed();
 
@@ -147,6 +169,23 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// macOS fallback implementation using fstat/fstatat
+#[cfg(target_os = "macos")]
+pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
+    use super::util::stat_fd;
+
+    // Get basic stat information
+    let st = stat_fd(dir, path)?;
+
+    // macOS doesn't have mount ID, use 0 as fallback
+    let mnt_id = 0;
+
+    // macOS doesn't have birth time in stat, use None
+    let btime = None;
+
+    Ok(StatExt { st, mnt_id, btime })
 }
 
 #[cfg(test)]

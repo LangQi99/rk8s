@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::{
-    Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::LinuxDirent64, util::*,
+    Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::{LinuxDirent64, stat64, off64_t, statvfs64}, 
+    util::*,
 };
 
 impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
@@ -37,8 +38,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             Err(ebadf())
         } else {
             let mut new_flags = self.get_writeback_open_flags(flags).await;
-            if !self.cfg.allow_direct_io && flags & libc::O_DIRECT != 0 {
-                new_flags &= !libc::O_DIRECT;
+            if !self.cfg.allow_direct_io && flags & O_DIRECT_FLAG != 0 {
+                new_flags &= !O_DIRECT_FLAG;
             }
             data.open_file(new_flags | libc::O_CLOEXEC, &self.proc_self_fd)
         }
@@ -85,7 +86,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res =
-            unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
+            unsafe { do_lseek64(dir.as_raw_fd(), offset as off64_t, libc::SEEK_SET).unwrap_or(-1) };
         if res < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -94,7 +95,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             // call getdents64 system call
             let result = unsafe {
                 libc::syscall(
-                    libc::SYS_getdents64,
+                    SYS_GETDENTS64,
                     dir.as_raw_fd(),
                     buffer.as_mut_ptr() as *mut LinuxDirent64,
                     BUFFER_SIZE,
@@ -185,7 +186,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res =
-            unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
+            unsafe { do_lseek64(dir.as_raw_fd(), offset as off64_t, libc::SEEK_SET).unwrap_or(-1) };
         if res < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -193,7 +194,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             // call getdents64 system call
             let result = unsafe {
                 libc::syscall(
-                    libc::SYS_getdents64,
+                    SYS_GETDENTS64,
                     dir.as_raw_fd(),
                     buffer.as_mut_ptr() as *mut LinuxDirent64,
                     BUFFER_SIZE,
@@ -304,7 +305,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         &self,
         inode: Inode,
         handle: Option<Handle>,
-    ) -> io::Result<(libc::stat64, Duration)> {
+      ) -> io::Result<(stat64, Duration)> {
         // trace!("FS {} passthrough: do_getattr: before get: inode={}, handle={:?}", self.uuid, inode, handle);
         let data = self.inode_map.get(inode).await.map_err(|e| {
             error!("fuse: do_getattr ino {inode} Not find err {e:?}");
@@ -522,7 +523,7 @@ impl Filesystem for PassthroughFs {
                     empty.as_ptr(),
                     uid,
                     gid,
-                    libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                    AT_EMPTY_PATH_FLAG | libc::AT_SYMLINK_NOFOLLOW,
                 )
             };
             if res < 0 {
@@ -668,7 +669,7 @@ impl Filesystem for PassthroughFs {
                     file.as_raw_fd(),
                     name.as_ptr(),
                     (mode) as libc::mode_t,
-                    u64::from(rdev),
+                    rdev as libc::dev_t,
                 )
             }
         };
@@ -699,7 +700,7 @@ impl Filesystem for PassthroughFs {
 
             let file = data.get_file()?;
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+            unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), (mode & !umask) as libc::mode_t) }
         };
         if res < 0 {
             return Err(io::Error::last_os_error().into());
@@ -761,7 +762,7 @@ impl Filesystem for PassthroughFs {
                 empty.as_ptr(),
                 new_file.as_raw_fd(),
                 newname.as_ptr(),
-                libc::AT_EMPTY_PATH,
+                AT_EMPTY_PATH_FLAG,
             )
         };
         if res == 0 {
@@ -932,26 +933,26 @@ impl Filesystem for PassthroughFs {
 
     /// get filesystem statistics.
     async fn statfs(&self, _req: Request, inode: Inode) -> Result<ReplyStatFs> {
-        let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
+          let mut out = MaybeUninit::<statvfs64>::zeroed();
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
 
         // Safe because this will only modify `out` and we check the return value.
-        let statfs: libc::statvfs64 =
-            match unsafe { libc::fstatvfs64(file.as_raw_fd(), out.as_mut_ptr()) } {
+        let statfs: statvfs64 =
+            match do_fstatvfs(file.as_raw_fd(), out.as_mut_ptr()) {
                 // Safe because the kernel guarantees that `out` has been initialized.
-                0 => unsafe { out.assume_init() },
+                Ok(()) => unsafe { out.assume_init() },
                 _ => return Err(io::Error::last_os_error().into()),
             };
 
         Ok(
             // Populate the ReplyStatFs structure with the necessary information
             ReplyStatFs {
-                blocks: statfs.f_blocks,
-                bfree: statfs.f_bfree,
-                bavail: statfs.f_bavail,
-                files: statfs.f_files,
-                ffree: statfs.f_ffree,
+                blocks: statfs.f_blocks as u64,
+                bfree: statfs.f_bfree as u64,
+                bavail: statfs.f_bavail as u64,
+                files: statfs.f_files as u64,
+                ffree: statfs.f_ffree as u64,
                 bsize: statfs.f_bsize as u32,
                 namelen: statfs.f_namemax as u32,
                 frsize: statfs.f_frsize as u32,
@@ -989,18 +990,17 @@ impl Filesystem for PassthroughFs {
         let fd = data.borrow_fd();
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe {
-            if datasync {
-                libc::fdatasync(fd.as_raw_fd())
+        let res = if datasync {
+            do_fdatasync(fd.as_raw_fd())
+        } else {
+            let ret = unsafe { libc::fsync(fd.as_raw_fd()) };
+            if ret == 0 {
+                Ok(())
             } else {
-                libc::fsync(fd.as_raw_fd())
+                Err(io::Error::last_os_error())
             }
         };
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error().into())
-        }
+        res.map_err(|e| e.into())
     }
 
     /// set an extended attribute.
@@ -1027,7 +1027,7 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
-            libc::setxattr(
+            sys_setxattr(
                 pathname.as_ptr(),
                 name.as_ptr(),
                 value.as_ptr() as *const libc::c_void,
@@ -1068,7 +1068,7 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
-            libc::getxattr(
+              sys_getxattr(
                 pathname.as_ptr(),
                 name.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_void,
@@ -1107,7 +1107,7 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
-            libc::listxattr(
+            sys_listxattr(
                 pathname.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_char,
                 size as libc::size_t,
@@ -1141,7 +1141,7 @@ impl Filesystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr()) };
+        let res = unsafe { sys_removexattr(pathname.as_ptr(), name.as_ptr()) };
         if res == 0 {
             Ok(())
         } else {
@@ -1471,20 +1471,13 @@ impl Filesystem for PassthroughFs {
         //  }
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe {
-            libc::fallocate64(
-                fd.as_raw_fd(),
-                mode as libc::c_int,
-                offset as libc::off64_t,
-                length as libc::off64_t,
-            )
-        };
-
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error().into())
-        }
+        let res = do_fallocate(
+            fd.as_raw_fd(),
+            mode as libc::c_int,
+            offset as off64_t,
+            length as off64_t,
+        );
+        res.map_err(|e| e.into())
     }
 
     /// rename a file or directory.
@@ -1581,21 +1574,14 @@ impl Filesystem for PassthroughFs {
         let old_file = old_inode.get_file()?;
         let new_file = new_inode.get_file()?;
         //TODO: Switch to libc::renameat2 -> libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
-        let res = unsafe {
-            libc::renameat2(
-                old_file.as_raw_fd(),
-                oldname.as_ptr(),
-                new_file.as_raw_fd(),
-                newname.as_ptr(),
-                flags,
-            )
-        };
-
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error().into())
-        }
+        let res = do_renameat2(
+            old_file.as_raw_fd(),
+            oldname.as_ptr(),
+            new_file.as_raw_fd(),
+            newname.as_ptr(),
+            flags,
+        );
+        res.map_err(|e| e.into())
     }
 
     /// find next data or hole after the specified offset.
@@ -1617,7 +1603,7 @@ impl Filesystem for PassthroughFs {
         let res = unsafe {
             libc::lseek(
                 file.as_raw_fd(),
-                offset as libc::off64_t,
+                offset as off64_t,
                 whence as libc::c_int,
             )
         };

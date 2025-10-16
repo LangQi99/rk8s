@@ -169,10 +169,18 @@ unsafe extern "C" {
 
     // Technically `file_handle` should be a `mut` pointer, but `open_by_handle_at()` is specified
     // not to change it, so we can declare it `const`.
+    #[cfg(target_os = "linux")]
     unsafe fn open_by_handle_at(
         mount_fd: libc::c_int,
         file_handle: *const CFileHandleInner,
         flags: libc::c_int,
+    ) -> libc::c_int;
+
+    #[cfg(target_os = "macos")]
+    unsafe fn open_by_handle_at(
+        _mount_fd: libc::c_int,
+        _file_handle: *const CFileHandleInner,
+        _flags: libc::c_int,
     ) -> libc::c_int;
 }
 
@@ -186,6 +194,7 @@ impl FileHandle {
     /// returns `Ok(Some)` at some point, it will never return `Ok(None)` later.
     ///
     /// Return an `io::Error` for all other errors.
+    #[cfg(target_os = "linux")]
     pub fn from_name_at(dir_fd: &impl AsRawFd, path: &CStr) -> io::Result<Option<Self>> {
         let mut mount_id: libc::c_int = 0;
         let mut c_fh = CFileHandle::new(0);
@@ -247,12 +256,27 @@ impl FileHandle {
         }))
     }
 
+    /// macOS implementation - File handles are not supported
+    #[cfg(target_os = "macos")]
+    pub fn from_name_at(_dir_fd: &impl AsRawFd, _path: &CStr) -> io::Result<Option<Self>> {
+        // macOS doesn't support name_to_handle_at, always return None
+        Ok(None)
+    }
+
     /// Create a file handle from a `fd`.
     /// This is a wrapper around `from_name_at()` and so has the same interface.
+    #[cfg(target_os = "linux")]
     pub fn from_fd(fd: &impl AsRawFd) -> io::Result<Option<Self>> {
         // Safe because this is a constant value and a valid C string.
         let empty_path = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
         Self::from_name_at(fd, empty_path)
+    }
+
+    /// macOS implementation - File handles are not supported
+    #[cfg(target_os = "macos")]
+    pub fn from_fd(_fd: &impl AsRawFd) -> io::Result<Option<Self>> {
+        // macOS doesn't support file handles, always return None
+        Ok(None)
     }
 
     /// Return an openable copy of the file handle by ensuring that `mount_fd` contains a valid fd
@@ -295,6 +319,7 @@ impl Debug for OpenableFileHandle {
 
 impl OpenableFileHandle {
     /// Open a file from an openable file handle.
+    #[cfg(target_os = "linux")]
     pub fn open(&self, flags: libc::c_int) -> io::Result<File> {
         let ret = unsafe {
             open_by_handle_at(
@@ -312,6 +337,12 @@ impl OpenableFileHandle {
             error!("open_by_handle_at failed error {e:?}");
             Err(e)
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn open(&self, _flags: libc::c_int) -> io::Result<File> {
+        // macOS doesn't support file handles, return error
+        Err(io::Error::new(io::ErrorKind::Unsupported, "File handles not supported on macOS"))
     }
 
     pub fn file_handle(&self) -> &Arc<FileHandle> {
@@ -442,5 +473,28 @@ mod tests {
 
         // Clean up the temporary file
         std::fs::remove_file(tmp_file_path).unwrap();
+    }
+}
+
+// Platform-specific implementations
+#[cfg(target_os = "linux")]
+impl FileHandle {
+    unsafe fn open_by_handle_at(
+        mount_fd: libc::c_int,
+        file_handle: *const CFileHandleInner,
+        flags: libc::c_int,
+    ) -> libc::c_int {
+        libc::open_by_handle_at(mount_fd, file_handle, flags)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl FileHandle {
+    unsafe fn open_by_handle_at(
+        _mount_fd: libc::c_int,
+        _file_handle: *const CFileHandleInner,
+        _flags: libc::c_int,
+    ) -> libc::c_int {
+        -1 // Not supported on macOS
     }
 }

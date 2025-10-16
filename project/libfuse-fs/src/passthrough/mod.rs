@@ -1,9 +1,12 @@
 use config::{CachePolicy, Config};
 use file_handle::{FileHandle, OpenableFileHandle};
 
+use crate::passthrough::os_compat::stat64;
+use crate::passthrough::statx::statx_timestamp;
+use crate::passthrough::util::O_PATH_OR_RDONLY;
 use futures::executor::block_on;
 use inode_store::{InodeId, InodeStore};
-use libc::{self, statx_timestamp};
+use libc;
 
 use moka::future::Cache;
 use rfuse3::{Errno, raw::reply::ReplyEntry};
@@ -51,9 +54,9 @@ mod inode_store;
 mod mmap;
 mod mount_fd;
 pub mod newlogfs;
-mod os_compat;
-mod statx;
-mod util;
+pub mod os_compat;
+pub mod statx;
+pub mod util;
 
 /// Current directory
 pub const CURRENT_DIR_CSTR: &[u8] = b".\0";
@@ -140,7 +143,7 @@ impl InodeHandle {
         match self {
             InodeHandle::File(f) => Ok(InodeFile::Ref(f)),
             InodeHandle::Handle(h) => {
-                let f = h.open(libc::O_PATH)?;
+                let f = h.open(O_PATH_OR_RDONLY)?;
                 Ok(InodeFile::Owned(f))
             }
         }
@@ -153,7 +156,7 @@ impl InodeHandle {
         }
     }
 
-    fn stat(&self) -> Result<libc::stat64> {
+    fn stat(&self) -> Result<stat64> {
         match self {
             InodeHandle::File(f) => stat_fd(f, None),
             InodeHandle::Handle(_h) => {
@@ -454,7 +457,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         let proc_self_fd = Self::open_file(
             &libc::AT_FDCWD,
             proc_self_fd_cstr,
-            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            O_PATH_OR_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0,
         )?;
 
@@ -545,7 +548,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 handle,
                 2,
                 id,
-                st.st.st_mode,
+                st.st.st_mode.into(),
                 st.btime
                     .ok_or_else(|| io::Error::other("birth time not available"))?,
             )))
@@ -645,7 +648,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         dir: &impl AsRawFd,
         name: &CStr,
     ) -> io::Result<(Arc<FileHandle>, StatExt)> {
-        let path_file = self.open_file_restricted(dir, name, libc::O_PATH, 0)?;
+        let path_file = self.open_file_restricted(dir, name, O_PATH_OR_RDONLY, 0)?;
         let st = statx::statx(&path_file, None)?;
 
         let btime_is_valid = match st.btime {
@@ -819,7 +822,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                             handle_clone,
                             1,
                             id,
-                            st.st.st_mode,
+                            st.st.st_mode.into(),
                             st.btime
                                 .ok_or_else(|| io::Error::other("birth time not available"))?,
                         )),
@@ -830,7 +833,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             }
         };
 
-        let (entry_timeout, _) = if is_dir(st.st.st_mode) {
+        let (entry_timeout, _) = if is_dir(st.st.st_mode.into()) {
             (self.dir_entry_timeout, self.dir_attr_timeout)
         } else {
             (self.cfg.entry_timeout, self.cfg.attr_timeout)
