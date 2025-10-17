@@ -174,16 +174,43 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
 /// macOS fallback implementation using fstat/fstatat
 #[cfg(target_os = "macos")]
 pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
+    use super::os_compat::stat64;
     use super::util::stat_fd;
+    use std::mem::MaybeUninit;
 
     // Get basic stat information
-    let st = stat_fd(dir, path)?;
+    let st = if path.is_none() {
+        // When path is None, use fstat directly instead of fstatat with empty path
+        let mut st = MaybeUninit::<stat64>::zeroed();
+        let fd = dir.as_raw_fd();
+        println!("DEBUG: statx (macOS) calling fstat on fd: {}", fd);
+        let res = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
+        if res >= 0 {
+            let st = unsafe { st.assume_init() };
+            println!(
+                "DEBUG: statx (macOS) fstat success: st_mode: {:o}, st_ino: {}, st_dev: {}",
+                st.st_mode, st.st_ino, st.st_dev
+            );
+            st
+        } else {
+            let err = std::io::Error::last_os_error();
+            println!("DEBUG: statx (macOS) fstat failed: {}", err);
+            return Err(err);
+        }
+    } else {
+        stat_fd(dir, path)?
+    };
 
     // macOS doesn't have mount ID, use 0 as fallback
     let mnt_id = 0;
 
     // macOS doesn't have birth time in stat, use None
     let btime = None;
+
+    println!(
+        "DEBUG: statx (macOS) returning st_mode: {:o}, st_ino: {}, st_dev: {}",
+        st.st_mode, st.st_ino, st.st_dev
+    );
 
     Ok(StatExt { st, mnt_id, btime })
 }

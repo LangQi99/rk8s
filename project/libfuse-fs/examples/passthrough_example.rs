@@ -23,7 +23,7 @@ struct Args {
     #[arg(long)]
     rootdir: String,
     /// Use privileged mount instead of unprivileged (default false)
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     privileged: bool,
 }
 
@@ -41,8 +41,30 @@ async fn main() {
     let gid = unsafe { libc::getgid() };
 
     let mut mount_options = MountOptions::default();
-    mount_options.force_readdir_plus(true).uid(uid).gid(gid);
+    // Don't set force_readdir_plus explicitly - use default (like vfs example)
+    mount_options.uid(uid).gid(gid);
 
+    // macOS uses unprivileged mount, like vfs example
+    #[cfg(target_os = "macos")]
+    let mut mount_handle = {
+        debug!("Mounting passthrough on macOS (unprivileged)");
+        eprintln!("About to call mount_with_unprivileged...");
+        match Session::new(mount_options)
+            .mount_with_unprivileged(fs, mount_path)
+            .await
+        {
+            Ok(handle) => {
+                eprintln!("Mount succeeded!");
+                handle
+            }
+            Err(e) => {
+                eprintln!("Mount failed with error: {:?}", e);
+                panic!("Mount failed: {:?}", e);
+            }
+        }
+    };
+
+    #[cfg(not(target_os = "macos"))]
     let mut mount_handle = if !args.privileged {
         debug!("Mounting passthrough (unprivileged)");
         Session::new(mount_options)

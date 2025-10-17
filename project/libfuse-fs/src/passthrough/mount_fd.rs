@@ -13,7 +13,7 @@ use tracing::debug;
 
 use super::MOUNT_INFO_FILE;
 use super::statx::statx;
-use super::util::{einval, is_safe_inode, O_PATH_OR_RDONLY};
+use super::util::{O_PATH_OR_RDONLY, einval, is_safe_inode};
 
 /// Type alias for mount id.
 pub type MountId = u64;
@@ -215,55 +215,74 @@ impl MountFds {
 
     /// Given a mount ID, return the mount root path (by reading `/proc/self/mountinfo`)
     fn get_mount_root(&self, mount_id: MountId) -> MPRResult<String> {
-        let mountinfo = {
-            let mountinfo_file = &mut *self.mount_info.lock().unwrap();
-
-            mountinfo_file.rewind().map_err(|e| {
-                self.error_for_nolookup(mount_id, e)
-                    .prefix("Failed to access /proc/self/mountinfo".into())
-            })?;
-
-            let mut mountinfo = String::new();
-            mountinfo_file.read_to_string(&mut mountinfo).map_err(|e| {
-                self.error_for_nolookup(mount_id, e)
-                    .prefix("Failed to read /proc/self/mountinfo".into())
-            })?;
-
-            mountinfo
-        };
-
-        let path = mountinfo.split('\n').find_map(|line| {
-            let mut columns = line.split(char::is_whitespace);
-
-            if columns.next()?.parse::<MountId>().ok()? != mount_id {
-                return None;
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, we don't have /proc/self/mountinfo, so we use a simple approach
+            // For mount_id 0, we return the current working directory as a fallback
+            if mount_id == 0 {
+                return Ok(".".to_string());
             }
+            return Err(self.error_for_nolookup(
+                mount_id,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Mount ID lookup not supported on macOS",
+                ),
+            ));
+        }
 
-            // Skip parent mount ID, major:minor device ID, and the root within the filesystem
-            // (to get to the mount path)
-            columns.nth(3)
-        });
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mountinfo = {
+                let mountinfo_file = &mut *self.mount_info.lock().unwrap();
 
-        match path {
-            Some(p) => {
-                let p = String::from(p);
-                if let Some(prefix) = self.mount_prefix.as_ref() {
-                    if let Some(suffix) = p.strip_prefix(prefix).filter(|s| !s.is_empty()) {
-                        Ok(suffix.into())
-                    } else {
-                        // The shared directory is the mount point (strip_prefix() returned "") or
-                        // mount is outside the shared directory, so it must be the mount the root
-                        // directory is on
-                        Ok("/".into())
-                    }
-                } else {
-                    Ok(p)
+                mountinfo_file.rewind().map_err(|e| {
+                    self.error_for_nolookup(mount_id, e)
+                        .prefix("Failed to access /proc/self/mountinfo".into())
+                })?;
+
+                let mut mountinfo = String::new();
+                mountinfo_file.read_to_string(&mut mountinfo).map_err(|e| {
+                    self.error_for_nolookup(mount_id, e)
+                        .prefix("Failed to read /proc/self/mountinfo".into())
+                })?;
+
+                mountinfo
+            };
+
+            let path = mountinfo.split('\n').find_map(|line| {
+                let mut columns = line.split(char::is_whitespace);
+
+                if columns.next()?.parse::<MountId>().ok()? != mount_id {
+                    return None;
                 }
-            }
 
-            None => Err(self
-                .error_for_nolookup(mount_id, einval())
-                .set_desc(format!("Failed to find mount root for mount ID {mount_id}"))),
+                // Skip parent mount ID, major:minor device ID, and the root within the filesystem
+                // (to get to the mount path)
+                columns.nth(3)
+            });
+
+            match path {
+                Some(p) => {
+                    let p = String::from(p);
+                    if let Some(prefix) = self.mount_prefix.as_ref() {
+                        if let Some(suffix) = p.strip_prefix(prefix).filter(|s| !s.is_empty()) {
+                            Ok(suffix.into())
+                        } else {
+                            // The shared directory is the mount point (strip_prefix() returned "") or
+                            // mount is outside the shared directory, so it must be the mount the root
+                            // directory is on
+                            Ok("/".into())
+                        }
+                    } else {
+                        Ok(p)
+                    }
+                }
+
+                None => Err(self
+                    .error_for_nolookup(mount_id, einval())
+                    .set_desc(format!("Failed to find mount root for mount ID {mount_id}"))),
+            }
         }
     }
 

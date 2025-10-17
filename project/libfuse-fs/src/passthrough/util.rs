@@ -166,12 +166,15 @@ pub fn openat(
     // - we check the return value
     // We do not check `flags` because if the kernel cannot handle poorly specified flags then we
     // have much bigger problems.
+
     let fd = if flags & libc::O_CREAT == libc::O_CREAT {
         // The mode argument is used only when O_CREAT is specified
         unsafe { libc::openat(dir_fd.as_raw_fd(), path.as_ptr(), flags, mode) }
     } else {
         unsafe { libc::openat(dir_fd.as_raw_fd(), path.as_ptr(), flags) }
     };
+
+    println!("DEBUG: openat returned fd={}", fd);
     if fd >= 0 {
         // Safe because we just opened this fd
         Ok(unsafe { File::from_raw_fd(fd) })
@@ -187,15 +190,28 @@ pub fn reopen_fd_through_proc(
     flags: libc::c_int,
     proc_self_fd: &impl AsRawFd,
 ) -> io::Result<File> {
-    let name = CString::new(format!("{}", fd.as_raw_fd()).as_str())?;
-    // Clear the `O_NOFOLLOW` flag if it is set since we need to follow the `/proc/self/fd` symlink
-    // to get the file.
-    openat(
-        proc_self_fd,
-        &name,
-        flags & !libc::O_NOFOLLOW & !libc::O_CREAT,
-        0,
-    )
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, we can't use /proc/self/fd, so we just duplicate the file descriptor
+        let new_fd = unsafe { libc::dup(fd.as_raw_fd()) };
+        if new_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_fd(new_fd) })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let name = CString::new(format!("{}", fd.as_raw_fd()).as_str())?;
+        // Clear the `O_NOFOLLOW` flag if it is set since we need to follow the `/proc/self/fd` symlink
+        // to get the file.
+        openat(
+            proc_self_fd,
+            &name,
+            flags & !libc::O_NOFOLLOW & !libc::O_CREAT,
+            0,
+        )
+    }
 }
 
 pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
@@ -204,6 +220,7 @@ pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
         path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
     let mut st = MaybeUninit::<stat64>::zeroed();
     let dir_fd = dir.as_raw_fd();
+
     // Safe because the kernel will only write data in `st` and we check the return value.
     let res = unsafe {
         #[cfg(target_os = "linux")]
@@ -225,6 +242,7 @@ pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
             )
         }
     };
+
     if res >= 0 {
         // Safe because the kernel guarantees that the struct is now fully initialized.
         Ok(unsafe { st.assume_init() })

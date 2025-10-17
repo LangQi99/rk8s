@@ -272,11 +272,42 @@ impl FileHandle {
         Self::from_name_at(fd, empty_path)
     }
 
-    /// macOS implementation - File handles are not supported
+    /// macOS implementation - Create a simple file handle based on file descriptor
     #[cfg(target_os = "macos")]
-    pub fn from_fd(_fd: &impl AsRawFd) -> io::Result<Option<Self>> {
-        // macOS doesn't support file handles, always return None
-        Ok(None)
+    pub fn from_fd(fd: &impl AsRawFd) -> io::Result<Option<Self>> {
+        // On macOS, we create a simple file handle that stores a duplicated file descriptor
+        // This is a simplified approach that doesn't use the full file handle mechanism
+        // but allows the filesystem to work for basic operations
+
+        // IMPORTANT: We must duplicate the fd because the original fd might be closed
+        // after this function returns
+        let dup_fd = unsafe { libc::dup(fd.as_raw_fd()) };
+        if dup_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Create a minimal CFileHandle with just the fd as data
+        let mut c_fh = CFileHandle::new(8); // 8 bytes for a u64 fd
+        let fd_value = dup_fd as u64;
+
+        // Store the duplicated fd in the handle data
+        unsafe {
+            let handle_ptr = c_fh.wrapper.as_mut_fam_struct_ptr();
+            let handle = &mut *handle_ptr;
+            handle.handle_bytes = 8;
+            handle.handle_type = 1; // Custom type for macOS fd-based handles
+            let fd_bytes = fd_value.to_le_bytes();
+            std::ptr::copy_nonoverlapping(
+                fd_bytes.as_ptr(),
+                handle.f_handle.as_mut_ptr() as *mut u8,
+                8,
+            );
+        }
+
+        Ok(Some(FileHandle {
+            mnt_id: 0, // macOS doesn't have mount IDs, use 0
+            handle: c_fh,
+        }))
     }
 
     /// Return an openable copy of the file handle by ensuring that `mount_fd` contains a valid fd
@@ -340,9 +371,46 @@ impl OpenableFileHandle {
     }
 
     #[cfg(target_os = "macos")]
-    pub fn open(&self, _flags: libc::c_int) -> io::Result<File> {
-        // macOS doesn't support file handles, return error
-        Err(io::Error::new(io::ErrorKind::Unsupported, "File handles not supported on macOS"))
+    pub fn open(&self, flags: libc::c_int) -> io::Result<File> {
+        // Extract the stored file descriptor from the handle
+        let handle_ref = self.handle.handle.wrapper.as_fam_struct_ref();
+        if handle_ref.handle_bytes != 8 || handle_ref.handle_type != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid macOS file handle",
+            ));
+        }
+
+        // Read the stored fd
+        let fd_bytes =
+            unsafe { std::slice::from_raw_parts(handle_ref.f_handle.as_ptr() as *const u8, 8) };
+        let stored_fd = u64::from_le_bytes([
+            fd_bytes[0],
+            fd_bytes[1],
+            fd_bytes[2],
+            fd_bytes[3],
+            fd_bytes[4],
+            fd_bytes[5],
+            fd_bytes[6],
+            fd_bytes[7],
+        ]) as i32;
+
+        // Duplicate the file descriptor with the requested flags
+        let new_fd = unsafe { libc::dup(stored_fd) };
+        if new_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Set the flags on the duplicated fd
+        let result = unsafe { libc::fcntl(new_fd, libc::F_SETFL, flags) };
+        if result < 0 {
+            unsafe {
+                libc::close(new_fd);
+            }
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(unsafe { File::from_raw_fd(new_fd) })
     }
 
     pub fn file_handle(&self) -> &Arc<FileHandle> {

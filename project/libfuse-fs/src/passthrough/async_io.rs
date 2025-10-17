@@ -15,19 +15,21 @@ use std::{
         unix::ffi::OsStringExt,
     },
     sync::{Arc, atomic::Ordering},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tracing::{debug, error, info, trace};
 
-use vm_memory::{ByteValued, bitmap::BitmapSlice};
+use vm_memory::bitmap::BitmapSlice;
 
 use crate::{
-    passthrough::{CURRENT_DIR_CSTR, EMPTY_CSTR, FileUniqueKey, PARENT_DIR_CSTR, statx::statx},
+    passthrough::{EMPTY_CSTR, FileUniqueKey, statx::statx},
     util::{convert_stat64_to_file_attr, filetype_from_mode},
 };
 
 use super::{
-    Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::{LinuxDirent64, stat64, off64_t, statvfs64}, 
+    Handle, HandleData, PassthroughFs,
+    config::CachePolicy,
+    os_compat::{off64_t, stat64, statvfs64},
     util::*,
 };
 
@@ -66,6 +68,135 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     }
 
     async fn do_readdir(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        offset: u64,
+        entry_list: &mut Vec<std::result::Result<DirectoryEntry, Errno>>,
+    ) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.do_readdir_macos(inode, handle, offset, entry_list)
+                .await
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.do_readdir_linux(inode, handle, offset, entry_list)
+                .await
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn do_readdir_macos(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        offset: u64,
+        entry_list: &mut Vec<std::result::Result<DirectoryEntry, Errno>>,
+    ) -> io::Result<()> {
+        use std::ffi::CStr;
+
+        eprintln!(
+            "DEBUG: do_readdir_macos called: inode={}, handle={}, offset={}",
+            inode, handle, offset
+        );
+
+        let data = self.get_dirdata(handle, inode, libc::O_RDONLY).await?;
+        let (_guard, dir) = data.get_file_mut().await;
+
+        // Use a blocking approach to avoid Send issues
+        let dir_fd = dir.as_raw_fd();
+        debug!("fuse: do_readdir_macos: dir_fd={}", dir_fd);
+
+        let entries = tokio::task::spawn_blocking(move || {
+            let mut result = Vec::new();
+
+            // Use opendir/readdir on macOS
+            let dir_ptr = unsafe { libc::fdopendir(dir_fd) };
+            if dir_ptr.is_null() {
+                let err = std::io::Error::last_os_error();
+                eprintln!("fuse: fdopendir failed: {}", err);
+                return Err(err);
+            }
+
+            // Seek to the offset
+            if offset > 0 {
+                unsafe { libc::seekdir(dir_ptr, offset as i64) };
+            }
+
+            let mut current_offset = offset;
+            loop {
+                let dirent_ptr = unsafe { libc::readdir(dir_ptr) };
+                if dirent_ptr.is_null() {
+                    break; // End of directory
+                }
+
+                let dirent = unsafe { &*dirent_ptr };
+
+                // Skip . and .. entries
+                if dirent.d_name[0] == 0 {
+                    continue;
+                }
+
+                // Get the name length
+                let mut namelen = 0;
+                while namelen < 256 && dirent.d_name[namelen] != 0 {
+                    namelen += 1;
+                }
+
+                if namelen == 0 {
+                    continue;
+                }
+
+                // Get the name
+                let name_bytes = unsafe {
+                    std::slice::from_raw_parts(dirent.d_name.as_ptr() as *const u8, namelen)
+                };
+
+                // Skip . and .. entries
+                if name_bytes == b"." || name_bytes == b".." {
+                    current_offset += 1;
+                    continue;
+                }
+
+                let _name = CStr::from_bytes_with_nul(name_bytes).map_err(|e| {
+                    error!("fuse: do_readdir_macos: invalid name: {e:?}");
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+                })?;
+
+                let entry = DirectoryEntry {
+                    inode: dirent.d_ino as u64,
+                    kind: filetype_from_mode((dirent.d_type as u16 * 0x1000u16).into()),
+                    name: OsString::from_vec(name_bytes.to_vec()),
+                    offset: current_offset as i64,
+                };
+
+                result.push((entry, current_offset));
+                current_offset += 1;
+            }
+
+            unsafe { libc::closedir(dir_ptr) };
+            Ok(result)
+        })
+        .await??;
+
+        // Process entries asynchronously
+        for (mut entry, _) in entries {
+            // Look up the entry to get the correct inode
+            let name_cstr = osstr_to_cstr(&entry.name)?;
+            let _entry = self.do_lookup(inode, &name_cstr).await?;
+            let mut inodes = self.inode_map.inodes.write().await;
+
+            self.forget_one(&mut inodes, _entry.attr.ino, 1).await;
+            entry.inode = _entry.attr.ino;
+            entry_list.push(Ok(entry));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn do_readdir_linux(
         &self,
         inode: Inode,
         handle: Handle,
@@ -166,6 +297,138 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     }
 
     async fn do_readdirplus(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        offset: u64,
+        entry_list: &mut Vec<std::result::Result<DirectoryEntryPlus, Errno>>,
+    ) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.do_readdirplus_macos(inode, handle, offset, entry_list)
+                .await
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.do_readdirplus_linux(inode, handle, offset, entry_list)
+                .await
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn do_readdirplus_macos(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        offset: u64,
+        entry_list: &mut Vec<std::result::Result<DirectoryEntryPlus, Errno>>,
+    ) -> io::Result<()> {
+        use std::ffi::CStr;
+
+        eprintln!(
+            "DEBUG: do_readdirplus_macos called: inode={}, handle={}, offset={}",
+            inode, handle, offset
+        );
+        let data = self.get_dirdata(handle, inode, libc::O_RDONLY).await?;
+        let (_guard, dir) = data.get_file_mut().await;
+
+        // Use a blocking approach to avoid Send issues
+        let dir_fd = dir.as_raw_fd();
+        let entries = tokio::task::spawn_blocking(move || {
+            let mut result = Vec::new();
+
+            // Use opendir/readdir on macOS
+            let dir_ptr = unsafe { libc::fdopendir(dir_fd) };
+            if dir_ptr.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            // Seek to the offset
+            if offset > 0 {
+                unsafe { libc::seekdir(dir_ptr, offset as i64) };
+            }
+
+            let mut current_offset = offset;
+            loop {
+                let dirent_ptr = unsafe { libc::readdir(dir_ptr) };
+                if dirent_ptr.is_null() {
+                    break; // End of directory
+                }
+
+                let dirent = unsafe { &*dirent_ptr };
+
+                // Skip . and .. entries
+                if dirent.d_name[0] == 0 {
+                    continue;
+                }
+
+                // Get the name length
+                let mut namelen = 0;
+                while namelen < 256 && dirent.d_name[namelen] != 0 {
+                    namelen += 1;
+                }
+
+                if namelen == 0 {
+                    continue;
+                }
+
+                // Get the name
+                let name_bytes = unsafe {
+                    std::slice::from_raw_parts(dirent.d_name.as_ptr() as *const u8, namelen)
+                };
+
+                // Skip . and .. entries
+                if name_bytes == b"." || name_bytes == b".." {
+                    current_offset += 1;
+                    continue;
+                }
+
+                let _name = CStr::from_bytes_with_nul(name_bytes).map_err(|e| {
+                    error!("fuse: do_readdirplus_macos: invalid name: {e:?}");
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+                })?;
+
+                let entry = DirectoryEntry {
+                    inode: dirent.d_ino as u64,
+                    kind: filetype_from_mode((dirent.d_type as u16 * 0x1000u16).into()),
+                    name: OsString::from_vec(name_bytes.to_vec()),
+                    offset: current_offset as i64,
+                };
+
+                result.push((entry, current_offset));
+                current_offset += 1;
+            }
+
+            unsafe { libc::closedir(dir_ptr) };
+            Ok(result)
+        })
+        .await??;
+
+        // Process entries asynchronously
+        for (mut entry, _) in entries {
+            // Look up the entry to get the correct inode and attributes
+            let name_cstr = osstr_to_cstr(&entry.name)?;
+            debug!("readdirplus:{}", name_cstr.to_str().unwrap());
+            let _entry = self.do_lookup(inode, &name_cstr).await?;
+            entry.inode = _entry.attr.ino;
+
+            entry_list.push(Ok(DirectoryEntryPlus {
+                inode: entry.inode,
+                generation: _entry.generation,
+                kind: entry.kind,
+                name: entry.name,
+                offset: entry.offset,
+                attr: _entry.attr,
+                entry_ttl: _entry.ttl,
+                attr_ttl: _entry.ttl,
+            }));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    async fn do_readdirplus_linux(
         &self,
         inode: Inode,
         handle: Handle,
@@ -305,7 +568,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         &self,
         inode: Inode,
         handle: Option<Handle>,
-      ) -> io::Result<(stat64, Duration)> {
+    ) -> io::Result<(stat64, Duration)> {
         // trace!("FS {} passthrough: do_getattr: before get: inode={}, handle={:?}", self.uuid, inode, handle);
         let data = self.inode_map.get(inode).await.map_err(|e| {
             error!("fuse: do_getattr ino {inode} Not find err {e:?}");
@@ -386,16 +649,25 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     }
 }
 
-impl Filesystem for PassthroughFs {
+impl<S: BitmapSlice + Send + Sync> Filesystem for PassthroughFs<S> {
     /// initialize filesystem. Called before any other filesystem method.
     async fn init(&self, _req: Request) -> Result<ReplyInit> {
+        println!("DEBUG: init called");
+
         if self.cfg.do_import {
+            println!("DEBUG: init: calling import");
             self.import().await?;
+            println!("DEBUG: init: import completed");
         }
 
-        Ok(ReplyInit {
-            max_write: NonZeroU32::new(128 * 1024).unwrap(),
-        })
+        println!("DEBUG: init: returning ReplyInit");
+        // Use smaller max_write for macOS compatibility (vfs uses 4096)
+        #[cfg(target_os = "macos")]
+        let max_write = NonZeroU32::new(4096).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let max_write = NonZeroU32::new(128 * 1024).unwrap();
+
+        Ok(ReplyInit { max_write })
     }
 
     /// clean up filesystem. Called on filesystem exit which is fuseblk, in normal fuse filesystem,
@@ -413,11 +685,19 @@ impl Filesystem for PassthroughFs {
 
     /// look up a directory entry by name and get its attributes.
     async fn lookup(&self, _req: Request, parent: Inode, name: &OsStr) -> Result<ReplyEntry> {
+        println!(
+            "DEBUG: lookup called with parent: {}, name: {}",
+            parent,
+            name.to_string_lossy()
+        );
+
         // Don't use is_safe_path_component(), allow "." and ".." for NFS export support
         if name.to_string_lossy().as_bytes().contains(&SLASH_ASCII) {
+            println!("DEBUG: lookup: invalid path component");
             return Err(einval().into());
         }
         let name = osstr_to_cstr(name).unwrap();
+        println!("DEBUG: lookup: calling do_lookup");
         // trace!("lookup: parent={}, name={}", parent, name.to_str().unwrap());
         self.do_lookup(parent, name.as_ref()).await
     }
@@ -445,10 +725,46 @@ impl Filesystem for PassthroughFs {
         fh: Option<u64>,
         _flags: u32,
     ) -> Result<ReplyAttr> {
+        eprintln!("DEBUG: getattr called with inode: {}, fh: {:?}", inode, fh);
+
+        // Special handling for root inode (inode 1) on macOS
+        if inode == 1 {
+            eprintln!("DEBUG: getattr handling root inode (1) specially");
+            let attr = FileAttr {
+                ino: 1,
+                size: 0,
+                blocks: 0,
+                atime: SystemTime::now().into(),
+                mtime: SystemTime::now().into(),
+                ctime: SystemTime::now().into(),
+                #[cfg(target_os = "macos")]
+                crtime: SystemTime::now().into(),
+                kind: FileType::Directory,
+                perm: 0o755,
+                nlink: 2,
+                uid: 0,
+                gid: 0,
+                rdev: 0,
+                blksize: 4096,
+                #[cfg(target_os = "macos")]
+                flags: 0,
+            };
+            eprintln!("DEBUG: getattr returning hardcoded root inode attributes");
+            return Ok(ReplyAttr {
+                ttl: Duration::from_secs(1),
+                attr,
+            });
+        }
+
         let re = self.do_getattr(inode, fh).await?;
+        let file_attr = convert_stat64_to_file_attr(re.0);
+        println!(
+            "DEBUG: getattr returning for inode: {}, st_mode: {:o}, perm: {:o}",
+            inode, re.0.st_mode, file_attr.perm
+        );
         Ok(ReplyAttr {
             ttl: re.1,
-            attr: convert_stat64_to_file_attr(re.0),
+            attr: file_attr,
         })
     }
 
@@ -700,7 +1016,13 @@ impl Filesystem for PassthroughFs {
 
             let file = data.get_file()?;
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), (mode & !umask) as libc::mode_t) }
+            unsafe {
+                libc::mkdirat(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    (mode & !umask) as libc::mode_t,
+                )
+            }
         };
         if res < 0 {
             return Err(io::Error::last_os_error().into());
@@ -800,11 +1122,13 @@ impl Filesystem for PassthroughFs {
     /// [fuse_common.h](https://libfuse.github.io/doxygen/include_2fuse__common_8h_source.html) for
     /// more details.
     async fn open(&self, _req: Request, inode: Inode, flags: u32) -> Result<ReplyOpen> {
+        println!("DEBUG: open called with inode: {}, flags: {}", inode, flags);
         if self.no_open.load(Ordering::Relaxed) {
             info!("fuse: open is not supported.");
             Err(enosys().into())
         } else {
             let re = self.do_open(inode, flags).await?;
+            println!("DEBUG: open returning fh: {}", re.0.unwrap());
             Ok(ReplyOpen {
                 fh: re.0.unwrap(),
                 flags: re.1.bits(),
@@ -933,17 +1257,16 @@ impl Filesystem for PassthroughFs {
 
     /// get filesystem statistics.
     async fn statfs(&self, _req: Request, inode: Inode) -> Result<ReplyStatFs> {
-          let mut out = MaybeUninit::<statvfs64>::zeroed();
+        let mut out = MaybeUninit::<statvfs64>::zeroed();
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
 
         // Safe because this will only modify `out` and we check the return value.
-        let statfs: statvfs64 =
-            match do_fstatvfs(file.as_raw_fd(), out.as_mut_ptr()) {
-                // Safe because the kernel guarantees that `out` has been initialized.
-                Ok(()) => unsafe { out.assume_init() },
-                _ => return Err(io::Error::last_os_error().into()),
-            };
+        let statfs: statvfs64 = match do_fstatvfs(file.as_raw_fd(), out.as_mut_ptr()) {
+            // Safe because the kernel guarantees that `out` has been initialized.
+            Ok(()) => unsafe { out.assume_init() },
+            _ => return Err(io::Error::last_os_error().into()),
+        };
 
         Ok(
             // Populate the ReplyStatFs structure with the necessary information
@@ -1068,7 +1391,7 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
-              sys_getxattr(
+            sys_getxattr(
                 pathname.as_ptr(),
                 name.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_void,
@@ -1210,6 +1533,10 @@ impl Filesystem for PassthroughFs {
     /// sets [`MountOptions::no_open_dir_support`][crate::MountOptions::no_open_dir_support] and
     /// if the kernel supports `FUSE_NO_OPENDIR_SUPPORT`.
     async fn opendir(&self, _req: Request, inode: Inode, flags: u32) -> Result<ReplyOpen> {
+        eprintln!(
+            "DEBUG: opendir called with inode: {}, flags: {}",
+            inode, flags
+        );
         if self.no_opendir.load(Ordering::Relaxed) {
             info!("fuse: opendir is not supported.");
             Err(enosys().into())
@@ -1218,6 +1545,7 @@ impl Filesystem for PassthroughFs {
                 .do_open(inode, flags | (libc::O_DIRECTORY as u32))
                 .await?;
             let fd = t.0.unwrap();
+            eprintln!("DEBUG: opendir returning fh: {}", fd);
             Ok(ReplyOpen {
                 fh: fd,
                 flags: t.1.bits(),
@@ -1239,12 +1567,19 @@ impl Filesystem for PassthroughFs {
             impl futures_util::stream::Stream<Item = Result<DirectoryEntry>> + Send + 'a,
         >,
     > {
+        println!(
+            "DEBUG: readdir called with parent: {}, fh: {}, offset: {}",
+            parent, fh, offset
+        );
         if self.no_readdir.load(Ordering::Relaxed) {
+            println!("DEBUG: readdir disabled by no_readdir flag");
             return Err(enosys().into());
         }
         let mut entry_list = Vec::new();
+        println!("DEBUG: readdir calling do_readdir");
         self.do_readdir(parent, fh, offset as u64, &mut entry_list)
             .await?;
+        println!("DEBUG: readdir found {} entries", entry_list.len());
         Ok(ReplyDirectory {
             entries: stream::iter(entry_list),
         })
@@ -1600,13 +1935,8 @@ impl Filesystem for PassthroughFs {
         let (_guard, file) = data.get_file_mut().await;
 
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe {
-            libc::lseek(
-                file.as_raw_fd(),
-                offset as off64_t,
-                whence as libc::c_int,
-            )
-        };
+        let res =
+            unsafe { libc::lseek(file.as_raw_fd(), offset as off64_t, whence as libc::c_int) };
         if res < 0 {
             Err(io::Error::last_os_error().into())
         } else {
