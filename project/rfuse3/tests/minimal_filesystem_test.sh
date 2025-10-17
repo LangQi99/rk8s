@@ -11,7 +11,7 @@ CRATE_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 echo "Testing minimal filesystem example..."
 
 # Clean up any existing mount point
-if mountpoint -q "$MOUNTPOINT" 2>/dev/null; then
+if mount | grep -q " on $MOUNTPOINT "; then
     echo "Unmounting existing mount point..."
     umount "$MOUNTPOINT" || true
 fi
@@ -28,6 +28,9 @@ echo "Starting filesystem at $MOUNTPOINT..."
 cargo run --example minimal_filesystem_example -- --mountpoint "$MOUNTPOINT" &
 FS_PID=$!
 
+# Set up cleanup trap
+trap "kill $FS_PID 2>/dev/null || true; umount $MOUNTPOINT 2>/dev/null || true; rmdir $MOUNTPOINT 2>/dev/null || true" EXIT
+
 # Wait for filesystem to be ready
 sleep 2
 
@@ -42,12 +45,5 @@ cat "$MOUNTPOINT/hello.txt"
 
 echo "Testing file statistics..."
 stat "$MOUNTPOINT"
-
-# Clean up
-echo "Cleaning up..."
-kill $FS_PID 2>/dev/null || true
-sleep 1
-umount "$MOUNTPOINT" 2>/dev/null || true
-rmdir "$MOUNTPOINT" 2>/dev/null || true
 
 echo "Test completed successfully!"

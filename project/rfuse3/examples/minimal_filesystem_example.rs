@@ -225,7 +225,7 @@ impl Filesystem for MinimalFileSystem {
 
             let filtered: Vec<_> = entries
                 .into_iter()
-                .filter(|entry| entry.offset > offset as i64)
+                .filter(|entry| (entry.offset as u64) > offset)
                 .map(Ok)
                 .collect();
 
