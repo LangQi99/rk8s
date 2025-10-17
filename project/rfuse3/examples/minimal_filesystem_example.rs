@@ -391,9 +391,8 @@ async fn main() -> Result<()> {
     info!("  - ls {}  # List directory contents", args.mountpoint);
     info!("  - cat {}/hello.txt  # Read file", args.mountpoint);
     info!("Press Ctrl+C to unmount the filesystem");
-    let handle = &mut mount_handle;
     tokio::select! {
-        res = handle => {
+        res = &mut mount_handle => {
             match res {
                 Ok(_) => info!("Filesystem exited normally"),
                 Err(e) => {
@@ -404,13 +403,15 @@ async fn main() -> Result<()> {
         },
         _ = signal::ctrl_c() => {
             info!("Received exit signal, unmounting filesystem...");
-            mount_handle.unmount().await.map_err(|e| {
-                eprintln!("Unmount failed: {}", e);
-                e
-            })?;
-            info!("Filesystem unmounted");
         }
     }
+
+    // Unmount after the select completes to avoid overlapping borrows
+    mount_handle.unmount().await.map_err(|e| {
+        eprintln!("Unmount failed: {}", e);
+        e
+    })?;
+    info!("Filesystem unmounted");
 
     Ok(())
 }

@@ -24,7 +24,7 @@
     all(target_os = "linux", feature = "unprivileged"),
     target_os = "macos"
 ))]
-use std::io::{self, ErrorKind};
+use std::io;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 #[cfg(any(
@@ -243,6 +243,7 @@ fn find_fusermount3() -> io::Result<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn find_macfuse_mount() -> io::Result<PathBuf> {
+    use std::io::ErrorKind;
     if Path::new("/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfuse").exists() {
         Ok(PathBuf::from(
             "/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfuse",

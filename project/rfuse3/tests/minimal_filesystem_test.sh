@@ -13,7 +13,14 @@ echo "Testing minimal filesystem example..."
 # Clean up any existing mount point
 if mount | grep -q " on $MOUNTPOINT "; then
     echo "Unmounting existing mount point..."
-    umount "$MOUNTPOINT" || true
+    # Use platform-specific unmount logic
+    if command -v fusermount3 >/dev/null 2>&1; then
+        fusermount3 -u "$MOUNTPOINT" || fusermount -u "$MOUNTPOINT" || umount "$MOUNTPOINT" || true
+    elif command -v fusermount >/dev/null 2>&1; then
+        fusermount -u "$MOUNTPOINT" || umount "$MOUNTPOINT" || true
+    else
+        umount "$MOUNTPOINT" || true
+    fi
 fi
 
 # Create mount point
@@ -28,8 +35,16 @@ echo "Starting filesystem at $MOUNTPOINT..."
 cargo run --example minimal_filesystem_example -- --mountpoint "$MOUNTPOINT" &
 FS_PID=$!
 
-# Set up cleanup trap
-trap "kill $FS_PID 2>/dev/null || true; umount $MOUNTPOINT 2>/dev/null || true; rmdir $MOUNTPOINT 2>/dev/null || true" EXIT
+# Set up cleanup trap with platform-specific unmount logic
+trap "kill $FS_PID 2>/dev/null || true; \
+if command -v fusermount3 >/dev/null 2>&1; then \
+    fusermount3 -u $MOUNTPOINT 2>/dev/null || fusermount -u $MOUNTPOINT 2>/dev/null || umount $MOUNTPOINT 2>/dev/null || true; \
+elif command -v fusermount >/dev/null 2>&1; then \
+    fusermount -u $MOUNTPOINT 2>/dev/null || umount $MOUNTPOINT 2>/dev/null || true; \
+else \
+    umount $MOUNTPOINT 2>/dev/null || true; \
+fi; \
+rmdir $MOUNTPOINT 2>/dev/null || true" EXIT
 
 # Wait for filesystem to be ready
 sleep 2

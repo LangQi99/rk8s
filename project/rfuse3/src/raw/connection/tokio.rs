@@ -3,9 +3,9 @@ use std::env;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::Write;
-use std::io::{self, ErrorKind};
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::{Deref, DerefMut};
 #[cfg(any(
@@ -234,6 +234,7 @@ impl BlockFuseConnection {
         mount_options: MountOptions,
         mount_path: impl AsRef<Path>,
     ) -> io::Result<Self> {
+        use std::io::ErrorKind;
         use std::{thread, time::Duration};
 
         use tokio::time::sleep;
@@ -416,6 +417,8 @@ struct NonBlockFuseConnection {
 impl NonBlockFuseConnection {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     fn new() -> io::Result<Self> {
+        use std::io::ErrorKind;
+
         #[cfg(target_os = "freebsd")]
         const DEV_FUSE: &str = "/dev/fuse";
 
