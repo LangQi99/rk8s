@@ -16,6 +16,10 @@ WORK_DIR="$ARTIFACT_ROOT/work"                                # 运行期工作�
 LOG_DIR="$ARTIFACT_ROOT/logs"
 mkdir -p "$LOG_DIR" "$WORK_DIR"
 
+USE_PRIVILEGED_MOUNT=${USE_PRIVILEGED_MOUNT:-true}
+PRIV_FLAG=""
+[[ "$USE_PRIVILEGED_MOUNT" == "false" ]] && PRIV_FLAG="--privileged=false"
+
 OVERLAY_ROOT="$WORK_DIR/overlay"
 PT_ROOT="$WORK_DIR/passthrough"
 OVL_MNT="$OVERLAY_ROOT/mnt"; OVL_UP="$OVERLAY_ROOT/upper"; OVL_L1="$OVERLAY_ROOT/l1"; OVL_L2="$OVERLAY_ROOT/l2"
@@ -59,8 +63,9 @@ build_examples() {
 start_overlay() {
 	info "Starting overlay example"
 	local run_log="$LOG_DIR/overlay.run.log"
+	info "Command: overlayfs_example --mountpoint $OVL_MNT --upperdir $OVL_UP --lowerdir $OVL_L1 --lowerdir $OVL_L2 $PRIV_FLAG"
 	"$REPO_ROOT/project/target/debug/examples/overlayfs_example" \
-		--mountpoint "$OVL_MNT" --upperdir "$OVL_UP" --lowerdir "$OVL_L1" --lowerdir "$OVL_L2" \
+		--mountpoint "$OVL_MNT" --upperdir "$OVL_UP" --lowerdir "$OVL_L1" --lowerdir "$OVL_L2" $PRIV_FLAG \
 		>"$run_log" 2>&1 & echo $! >"$WORK_DIR/overlay.pid"
 	sleep 2
 	if mountpoint -q "$OVL_MNT"; then
@@ -75,7 +80,7 @@ start_passthrough() {
 	info "Starting passthrough example"
 	local run_log="$LOG_DIR/passthrough.run.log"
 	"$REPO_ROOT/project/target/debug/examples/passthrough_example" \
-		--mountpoint "$PT_MNT" --rootdir "$PT_SRC" \
+		--mountpoint "$PT_MNT" --rootdir "$PT_SRC" $PRIV_FLAG \
 		>"$run_log" 2>&1 & echo $! >"$WORK_DIR/passthrough.pid"
 	sleep 2
 	if mountpoint -q "$PT_MNT"; then
@@ -114,7 +119,11 @@ kill_and_unmount() {
 		sleep 1
 	fi
 	if mountpoint -q "$mnt"; then
-		fusermount3 -u "$mnt" 2>/dev/null || sudo fusermount3 -u "$mnt" 2>/dev/null || true
+		if [[ "$USE_PRIVILEGED_MOUNT" == "false" ]]; then
+			fusermount3 -u "$mnt" 2>/dev/null || true
+		else
+			fusermount3 -u "$mnt" 2>/dev/null || sudo fusermount3 -u "$mnt" 2>/dev/null || true
+		fi
 	fi
 }
 

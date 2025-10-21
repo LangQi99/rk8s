@@ -19,8 +19,8 @@ struct Args {
     /// Lower read-only layer directories (repeatable)
     #[arg(long)]
     lowerdir: Vec<String>,
-    /// Use privileged mount instead of unprivileged (default false)
-    #[arg(long, default_value_t = true)]
+    /// Use privileged mount instead of unprivileged (default true)
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     privileged: bool,
 }
 

@@ -7,7 +7,6 @@ use libfuse_fs::passthrough::{new_passthroughfs_layer, newlogfs::LoggingFileSyst
 use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
 use tokio::signal;
-use tracing::debug;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -22,8 +21,8 @@ struct Args {
     /// Source directory to expose
     #[arg(long)]
     rootdir: String,
-    /// Use privileged mount instead of unprivileged (default false)
-    #[arg(long, default_value_t = true)]
+    /// Use privileged mount instead of unprivileged (default true)
+    #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
     privileged: bool,
 }
 
@@ -44,13 +43,11 @@ async fn main() {
     mount_options.force_readdir_plus(true).uid(uid).gid(gid);
 
     let mut mount_handle = if !args.privileged {
-        debug!("Mounting passthrough (unprivileged)");
         Session::new(mount_options)
             .mount_with_unprivileged(fs, mount_path)
             .await
             .expect("Unprivileged mount failed")
     } else {
-        debug!("Mounting passthrough (privileged)");
         Session::new(mount_options)
             .mount(fs, mount_path)
             .await
