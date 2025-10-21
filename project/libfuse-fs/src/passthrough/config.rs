@@ -3,6 +3,8 @@
 
 use std::str::FromStr;
 use std::time::Duration;
+use std::path::PathBuf;
+use std::collections::HashMap;
 
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
 /// protocol uses close-to-open consistency. This means that any cached contents of the file are
@@ -45,6 +47,27 @@ impl FromStr for CachePolicy {
             "auto" | "Auto" | "AUTO" => Ok(CachePolicy::Auto),
             "always" | "Always" | "ALWAYS" => Ok(CachePolicy::Always),
             _ => Err("invalid cache policy"),
+        }
+    }
+}
+
+/// Bind mount configuration
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BindMount {
+    /// Mount point path (relative to the fs root)
+    pub mount_point: PathBuf,
+    /// Host source path
+    pub host_path: PathBuf,
+    /// Whether this is a readonly mount
+    pub readonly: bool,
+}
+
+impl BindMount {
+    pub fn new(mount_point: PathBuf, host_path: PathBuf, readonly: bool) -> Self {
+        Self {
+            mount_point,
+            host_path,
+            readonly,
         }
     }
 }
@@ -175,6 +198,10 @@ pub struct Config {
     /// The size of the mmap max usage
     /// The default is `1024 * 1024 * 1024` (1GB).
     pub max_mmap_size: u64,
+
+    /// Bind mount configurations
+    /// Map from mount point to bind mount config
+    pub bind_mounts: HashMap<PathBuf, BindMount>,
 }
 
 impl Default for Config {
@@ -200,6 +227,7 @@ impl Default for Config {
             allow_direct_io: true,
             use_mmap: false,
             max_mmap_size: 1024 * 1024 * 1024,
+            bind_mounts: HashMap::new(),
         }
     }
 }

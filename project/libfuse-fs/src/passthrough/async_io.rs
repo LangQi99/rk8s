@@ -385,6 +385,16 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     }
 }
 
+impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
+    /// Helper function to check if write operations are allowed on a parent inode
+    async fn check_write_permission(&self, parent: Inode) -> rfuse3::Result<()> {
+        if self.is_readonly_bind_mount(parent).await {
+            return Err(io::Error::from_raw_os_error(libc::EROFS).into());
+        }
+        Ok(())
+    }
+}
+
 impl Filesystem for PassthroughFs {
     /// initialize filesystem. Called before any other filesystem method.
     async fn init(&self, _req: Request) -> Result<ReplyInit> {
@@ -652,6 +662,9 @@ impl Filesystem for PassthroughFs {
         mode: u32,
         rdev: u32,
     ) -> Result<ReplyEntry> {
+        // Check if parent is readonly bind mount
+        self.check_write_permission(parent).await?;
+
         let name = osstr_to_cstr(name).unwrap();
         let name = name.as_ref();
         self.validate_path_component(name)?;
@@ -688,6 +701,9 @@ impl Filesystem for PassthroughFs {
         mode: u32,
         umask: u32,
     ) -> Result<ReplyEntry> {
+        // Check if parent is readonly bind mount
+        self.check_write_permission(parent).await?;
+
         let name = osstr_to_cstr(name).unwrap();
         let name = name.as_ref();
         self.validate_path_component(name)?;
@@ -710,6 +726,9 @@ impl Filesystem for PassthroughFs {
 
     /// remove a file.
     async fn unlink(&self, _req: Request, parent: Inode, name: &OsStr) -> Result<()> {
+        // Check if parent is readonly bind mount
+        self.check_write_permission(parent).await?;
+
         let name = osstr_to_cstr(name).unwrap();
         let name = name.as_ref();
         self.validate_path_component(name)?;
@@ -718,6 +737,9 @@ impl Filesystem for PassthroughFs {
 
     /// remove a directory.
     async fn rmdir(&self, _req: Request, parent: Inode, name: &OsStr) -> Result<()> {
+        // Check if parent is readonly bind mount
+        self.check_write_permission(parent).await?;
+
         let name = osstr_to_cstr(name).unwrap();
         let name = name.as_ref();
         self.validate_path_component(name)?;
@@ -1365,6 +1387,9 @@ impl Filesystem for PassthroughFs {
         mode: u32,
         flags: u32,
     ) -> Result<ReplyCreated> {
+        // Check if parent is readonly bind mount
+        self.check_write_permission(parent).await?;
+
         let name = osstr_to_cstr(name).unwrap();
         let name = name.as_ref();
         self.validate_path_component(name)?;
