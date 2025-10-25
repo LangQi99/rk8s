@@ -3,7 +3,13 @@
 // Simple passthrough filesystem example for integration tests.
 
 use clap::Parser;
+<<<<<<< HEAD
 use libfuse_fs::passthrough::{BindMount, Config, PassthroughFs, newlogfs::LoggingFileSystem};
+=======
+use libfuse_fs::passthrough::{
+    PassthroughArgs, new_passthroughfs_layer, newlogfs::LoggingFileSystem,
+};
+>>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
 use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -26,6 +32,7 @@ struct Args {
     /// Use privileged mount instead of unprivileged (default false)
     #[arg(long, default_value_t = true)]
     privileged: bool,
+<<<<<<< HEAD
     /// Bind mount: mount_point:host_path or mount_point:host_path:ro
     /// Can be specified multiple times.
     /// Example: --bind volumes:/tmp/host --bind data:/tmp/data:ro
@@ -59,6 +66,13 @@ fn parse_bind_mount(s: &str) -> Result<BindMountArg, String> {
         host_path,
         readonly,
     })
+=======
+    /// Options, currently contains uid/gid mapping info
+    #[arg(long, short)]
+    options: Option<String>,
+    #[arg(long)]
+    allow_other: bool,
+>>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
 }
 
 #[tokio::main]
@@ -69,6 +83,7 @@ async fn main() {
     
     let args = Args::parse();
 
+<<<<<<< HEAD
     // Create configuration
     let mut config = Config {
         root_dir: args.rootdir.clone(),
@@ -105,6 +120,14 @@ async fn main() {
         info!("Initialized {} bind mount(s)", args.bind.len());
     }
     
+=======
+    let fs = new_passthroughfs_layer(PassthroughArgs {
+        root_dir: args.rootdir,
+        mapping: args.options,
+    })
+    .await
+    .expect("Failed to init passthrough fs");
+>>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
     let fs = LoggingFileSystem::new(fs);
 
     let mount_path = OsString::from(&args.mountpoint);
@@ -112,7 +135,11 @@ async fn main() {
     let gid = unsafe { libc::getgid() };
 
     let mut mount_options = MountOptions::default();
-    mount_options.force_readdir_plus(true).uid(uid).gid(gid);
+    mount_options
+        .force_readdir_plus(true)
+        .uid(uid)
+        .gid(gid)
+        .allow_other(args.allow_other);
 
     let mut mount_handle = if !args.privileged {
         info!("Mounting passthrough (unprivileged) at {}", args.mountpoint);

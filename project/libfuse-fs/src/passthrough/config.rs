@@ -1,10 +1,13 @@
 // Copyright (C) 2020-2022 Alibaba Cloud. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 use std::path::PathBuf;
 use std::collections::HashMap;
+
+use crate::util::mapping::IdMappings;
 
 /// The caching policy that the file system should report to the FUSE client. By default the FUSE
 /// protocol uses close-to-open consistency. This means that any cached contents of the file are
@@ -120,7 +123,7 @@ pub struct Config {
     /// The path of the root directory.
     ///
     /// The default is `/`.
-    pub root_dir: String,
+    pub root_dir: PathBuf,
 
     /// Whether the file system should support Extended Attributes (xattr). Enabling this feature may
     /// have a significant impact on performance, especially on write parallelism. This is the result
@@ -199,9 +202,14 @@ pub struct Config {
     /// The default is `1024 * 1024 * 1024` (1GB).
     pub max_mmap_size: u64,
 
+<<<<<<< HEAD
     /// Bind mount configurations
     /// Map from mount point to bind mount config
     pub bind_mounts: HashMap<PathBuf, BindMount>,
+=======
+    /// UID/GID mapping. Format: `uidmapping=H:T:L[:H2:T2:L2...],gidmapping=H:T:L[:H2:T2:L2...]`
+    pub mapping: IdMappings,
+>>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
 }
 
 impl Default for Config {
@@ -211,7 +219,7 @@ impl Default for Config {
             attr_timeout: Duration::from_secs(5),
             cache_policy: Default::default(),
             writeback: false,
-            root_dir: String::from("/"),
+            root_dir: PathBuf::from("/"),
             xattr: false,
             do_import: true,
             no_open: false,
@@ -227,7 +235,11 @@ impl Default for Config {
             allow_direct_io: true,
             use_mmap: false,
             max_mmap_size: 1024 * 1024 * 1024,
+<<<<<<< HEAD
             bind_mounts: HashMap::new(),
+=======
+            mapping: IdMappings::default(),
+>>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
         }
     }
 }
