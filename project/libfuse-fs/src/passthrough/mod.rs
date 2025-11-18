@@ -31,7 +31,7 @@ use std::{
         fd::{AsFd, AsRawFd, BorrowedFd, RawFd},
         unix::ffi::OsStringExt,
     },
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,

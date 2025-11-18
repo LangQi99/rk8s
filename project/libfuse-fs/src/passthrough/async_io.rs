@@ -954,32 +954,11 @@ impl Filesystem for PassthroughFs {
         mode: u32,
         umask: u32,
     ) -> Result<ReplyEntry> {
-<<<<<<< HEAD
         // Check if parent is readonly bind mount
         self.check_write_permission(parent).await?;
 
-        let name = osstr_to_cstr(name).unwrap();
-        let name = name.as_ref();
-        self.validate_path_component(name)?;
-
-        let data = self.inode_map.get(parent).await?;
-
-        let res = {
-            //let (_uid, _gid) = set_creds(req.uid, req.gid)?;
-
-            let file = data.get_file()?;
-            // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), mode & !umask) }
-        };
-        if res < 0 {
-            return Err(io::Error::last_os_error().into());
-        }
-
-        self.do_lookup(parent, name).await
-=======
         self.do_mkdir_inner(req, parent, name, mode, umask, None, None)
             .await
->>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
     }
 
     /// remove a file.
@@ -1648,72 +1627,11 @@ impl Filesystem for PassthroughFs {
         mode: u32,
         flags: u32,
     ) -> Result<ReplyCreated> {
-<<<<<<< HEAD
         // Check if parent is readonly bind mount
         self.check_write_permission(parent).await?;
 
-        let name = osstr_to_cstr(name).unwrap();
-        let name = name.as_ref();
-        self.validate_path_component(name)?;
-
-        let dir = self.inode_map.get(parent).await?;
-        let dir_file = dir.get_file()?;
-
-        let new_file = {
-            //let (_uid, _gid) = set_creds(req.uid, req.gid)?;
-
-            let flags = self.get_writeback_open_flags(flags as i32).await;
-            Self::create_file_excl(&dir_file, name, flags, mode)?
-        };
-
-        let entry = self.do_lookup(parent, name).await?;
-        let file = match new_file {
-            // File didn't exist, now created by create_file_excl()
-            Some(f) => f,
-            // File exists, and args.flags doesn't contain O_EXCL. Now let's open it with
-            // open_inode().
-            None => {
-                // Cap restored when _killpriv is dropped
-                // let _killpriv = if self.killpriv_v2.load().await
-                //     && (args.fuse_flags & FOPEN_IN_KILL_SUIDGID != 0)
-                // {
-                //     self::drop_cap_fsetid()?
-                // } else {
-                //     None
-                // };
-
-                //let (_uid, _gid) = set_creds(req.uid, req.gid)?;
-                self.open_inode(entry.attr.ino, flags as i32).await?
-            }
-        };
-
-        let ret_handle = if !self.no_open.load(Ordering::Relaxed) {
-            let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
-            let data = HandleData::new(entry.attr.ino, file, flags);
-            self.handle_map.insert(handle, data).await;
-            handle
-        } else {
-            return Err(io::Error::from_raw_os_error(libc::EACCES).into());
-        };
-
-        let mut opts = OpenOptions::empty();
-        match self.cfg.cache_policy {
-            CachePolicy::Never => opts |= OpenOptions::DIRECT_IO,
-            CachePolicy::Metadata => opts |= OpenOptions::DIRECT_IO,
-            CachePolicy::Always => opts |= OpenOptions::KEEP_CACHE,
-            _ => {}
-        };
-        Ok(ReplyCreated {
-            ttl: entry.ttl,
-            attr: entry.attr,
-            generation: entry.generation,
-            fh: ret_handle,
-            flags: opts.bits(),
-        })
-=======
         self.do_create_inner(req, parent, name, mode, flags, None, None)
             .await
->>>>>>> 6d942b83c139734849543209bf1acea0aa8a558f
     }
 
     /// handle interrupt. When a operation is interrupted, an interrupt request will send to fuse
