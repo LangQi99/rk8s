@@ -78,6 +78,7 @@ where
 {
     pub root_dir: P,
     pub mapping: Option<M>,
+    pub bind_mounts: Vec<(PathBuf, PathBuf, bool)>,
 }
 
 pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
@@ -95,6 +96,13 @@ pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
             .as_ref()
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    }
+
+    for (mount_point, host_path, readonly) in args.bind_mounts {
+        config.bind_mounts.insert(
+            mount_point.clone(),
+            BindMount::new(mount_point, host_path, readonly),
+        );
     }
 
     let fs = PassthroughFs::<()>::new(config)?;
@@ -1013,6 +1021,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                     "Looking up bind mount point: {:?}, using inode {}",
                     name_path, bind_mount.mount_point_inode
                 );
+                info!("do_lookup: found bind mount: {:?} -> inode {}", name_path, bind_mount.mount_point_inode);
                 
                 // Use open_file_and_handle to get the stat info
                 let current_dir_cstr = CStr::from_bytes_with_nul(CURRENT_DIR_CSTR).unwrap();
