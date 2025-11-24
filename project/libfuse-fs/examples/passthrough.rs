@@ -126,8 +126,6 @@ async fn main() {
     }
     
     let fs = LoggingFileSystem::new(fs);
-
-    let fs = LoggingFileSystem::new(fs);
     let mount_path = OsString::from(&args.mountpoint);
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
