@@ -2759,6 +2759,7 @@ where
         let layer = new_passthroughfs_layer(PassthroughArgs {
             root_dir: lower,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: Vec::new(),
         })
         .await
         .expect("Failed to create lower filesystem layer");
@@ -2769,6 +2770,7 @@ where
         new_passthroughfs_layer(PassthroughArgs {
             root_dir: args.upperdir,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: Vec::new(),
         })
         .await
         .expect("Failed to create upper filesystem layer"),

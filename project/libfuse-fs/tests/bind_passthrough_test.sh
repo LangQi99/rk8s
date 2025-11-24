@@ -90,18 +90,18 @@ echo_info "  挂载点: ${MNT_DIR}"
 # 编译示例
 echo_step "编译示例程序"
 cd "$(dirname "$0")/.."
-cargo build --example passthrough_example --quiet
+cargo build --example passthrough --quiet
 echo_success "编译完成"
 
 # 启动 FUSE 文件系统
 echo_step "启动 Passthrough 文件系统（带 Bind Mount）"
-echo_info "命令: passthrough_example \\"
+echo_info "命令: passthrough \\"
 echo_info "  --rootdir ${SRC_DIR} \\"
 echo_info "  --mountpoint ${MNT_DIR} \\"
 echo_info "  --bind volumes:${HOST_DIR} \\"
 echo_info "  --bind logs:${HOST2_DIR}:ro"
 
-cargo run --example passthrough_example --quiet -- \
+cargo run --example passthrough --quiet -- \
     --rootdir "${SRC_DIR}" \
     --mountpoint "${MNT_DIR}" \
     --bind "volumes:${HOST_DIR}" \
@@ -237,9 +237,9 @@ echo_success "✓ 文件同步正确"
 
 echo ""
 echo_step "使用方式"
-echo_info "标准的 passthrough_example 现在支持 --bind 参数："
+echo_info "标准的 passthrough 示例现在支持 --bind 参数："
 echo ""
-echo "  cargo run --example passthrough_example -- \\"
+echo "  cargo run --example passthrough -- \\"
 echo "    --rootdir /path/to/source \\"
 echo "    --mountpoint /path/to/mount \\"
 echo "    --bind volumes:/host/volumes \\"

@@ -10,7 +10,7 @@ use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use tokio::signal;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Parser, Debug)]
 #[command(
