@@ -1569,6 +1569,7 @@ mod tests {
         let args = PassthroughArgs {
             root_dir: source_dir.clone(),
             mapping: None::<&str>,
+            bind_mounts: vec![],
         };
         let fs = match super::new_passthroughfs_layer(args).await {
             Ok(fs) => fs,

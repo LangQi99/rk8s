@@ -1094,6 +1094,7 @@ mod tests {
             let layer = new_passthroughfs_layer(PassthroughArgs {
                 root_dir: lower.clone(),
                 mapping: None::<&str>,
+                bind_mounts: vec![],
             })
             .await
             .unwrap();
@@ -1104,6 +1105,7 @@ mod tests {
             new_passthroughfs_layer(PassthroughArgs {
                 root_dir: upperdir,
                 mapping: None::<&str>,
+                bind_mounts: vec![],
             })
             .await
             .unwrap(),

@@ -135,6 +135,7 @@ async fn main() -> Result<(), std::io::Error> {
         // In production, set to false unless you specifically need multi-user access
         // and have proper permission checks in place.
         allow_other: true,
+        bind_mounts: vec![],
     })
     .await;
     println!("Mounted");
