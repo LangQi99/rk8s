@@ -13,7 +13,6 @@ use std::io::ErrorKind;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tracing::error;
 use tracing::info;
 use tracing::trace;
 
@@ -367,11 +366,18 @@ impl Filesystem for OverlayFs {
 
         self.handles.lock().await.insert(hd, Arc::new(handle_data));
 
-        trace!("OPEN: returning handle: {hd}");
+        let mut opts = OpenOptions::empty();
+        match self.config.cache_policy {
+            CachePolicy::Never => opts |= OpenOptions::DIRECT_IO,
+            CachePolicy::Always => opts |= OpenOptions::KEEP_CACHE,
+            _ => {}
+        }
+
+        // trace!("OPEN: returning handle: {hd}");
 
         Ok(ReplyOpen {
             fh: hd,
-            flags: flags as u32,
+            flags: opts.bits(),
         })
     }
 
@@ -444,6 +450,59 @@ impl Filesystem for OverlayFs {
         }
     }
 
+    /// Copy a range of data from one file to another. This can improve performance because it
+    /// reduces data copying: normally, data will be copied from FUSE server to kernel, then to
+    /// user-space, then to kernel, and finally sent back to FUSE server. By implementing this
+    /// method, data will only be copied internally within the FUSE server.
+    #[allow(clippy::too_many_arguments)]
+    async fn copy_file_range(
+        &self,
+        req: Request,
+        inode_in: Inode,
+        fh_in: u64,
+        offset_in: u64,
+        inode_out: Inode,
+        fh_out: u64,
+        offset_out: u64,
+        length: u64,
+        flags: u64,
+    ) -> Result<ReplyCopyFileRange> {
+        // Get handle data for source file
+        let data_in = self.get_data(req, Some(fh_in), inode_in, 0).await?;
+        let handle_in = match data_in.real_handle {
+            None => return Err(Error::from_raw_os_error(libc::ENOENT).into()),
+            Some(ref hd) => hd,
+        };
+
+        // Get handle data for destination file
+        let data_out = self.get_data(req, Some(fh_out), inode_out, 0).await?;
+        let handle_out = match data_out.real_handle {
+            None => return Err(Error::from_raw_os_error(libc::ENOENT).into()),
+            Some(ref hd) => hd,
+        };
+
+        // Both files must be on the same layer for copy_file_range to work
+        if !Arc::ptr_eq(&handle_in.layer, &handle_out.layer) {
+            // Different layers - return EXDEV to trigger fallback to read/write
+            return Err(Error::from_raw_os_error(libc::EXDEV).into());
+        }
+
+        // Delegate to the underlying PassthroughFs layer
+        handle_in
+            .layer
+            .copy_file_range(
+                req,
+                handle_in.inode,
+                handle_in.handle.load(Ordering::Relaxed),
+                offset_in,
+                handle_out.inode,
+                handle_out.handle.load(Ordering::Relaxed),
+                offset_out,
+                length,
+                flags,
+            )
+            .await
+    }
     /// get filesystem statistics.
     async fn statfs(&self, req: Request, inode: Inode) -> Result<ReplyStatFs> {
         self.do_statvfs(req, inode).await.map_err(|e| e.into())
@@ -838,8 +897,8 @@ impl Filesystem for OverlayFs {
         let mut opts = OpenOptions::empty();
         match self.config.cache_policy {
             CachePolicy::Never => opts |= OpenOptions::DIRECT_IO,
-            CachePolicy::Auto => opts |= OpenOptions::DIRECT_IO,
             CachePolicy::Always => opts |= OpenOptions::KEEP_CACHE,
+            _ => {}
         }
 
         Ok(ReplyCreated {
@@ -908,8 +967,6 @@ impl Filesystem for OverlayFs {
         offset: u64,
         whence: u32,
     ) -> Result<ReplyLSeek> {
-        // can this be on dir? FIXME: assume file for now
-        // we need special process if it can be called on dir
         let node = self.lookup_node(req, inode, "").await?;
 
         if node.whiteout.load(Ordering::Relaxed) {
@@ -918,14 +975,87 @@ impl Filesystem for OverlayFs {
 
         let st = node.stat64(req).await?;
         if utils::is_dir(&st.attr.kind) {
-            error!("lseek on directory");
-            return Err(Error::from_raw_os_error(libc::EINVAL).into());
-        }
+            // Special handling and security restrictions for directory operations.
+            // Use the common API to obtain the underlying layer and handle info.
+            let (layer, real_inode, real_handle) = self.find_real_info_from_handle(fh).await?;
 
-        let (layer, real_inode, real_handle) = self.find_real_info_from_handle(fh).await?;
-        layer
-            .lseek(req, real_inode, real_handle, offset, whence)
-            .await
+            // Verify that the underlying handle refers to a directory.
+            let handle_stat = match layer.getattr(req, real_inode, Some(real_handle), 0).await {
+                Ok(s) => s,
+                Err(_) => return Err(Error::from_raw_os_error(libc::EBADF).into()),
+            };
+
+            if !utils::is_dir(&handle_stat.attr.kind) {
+                return Err(Error::from_raw_os_error(libc::ENOTDIR).into());
+            }
+
+            // Handle directory lseek operations according to POSIX standard
+            // This enables seekdir/telldir functionality on directories
+            match whence {
+                // SEEK_SET: Set the directory position to an absolute value
+                x if x == libc::SEEK_SET as u32 => {
+                    // Validate offset bounds to prevent overflow
+                    // Directory offsets should not exceed i64::MAX
+                    if offset > i64::MAX as u64 {
+                        return Err(Error::from_raw_os_error(libc::EINVAL).into());
+                    }
+
+                    // Perform the seek operation on the underlying layer
+                    // Delegate to the lower layer implementation
+                    layer
+                        .lseek(req, real_inode, real_handle, offset, whence)
+                        .await
+                }
+                // SEEK_CUR: Move relative to the current directory position
+                x if x == libc::SEEK_CUR as u32 => {
+                    // Get current position from underlying layer
+                    // This is needed to calculate the new position
+                    let current = match layer
+                        .lseek(req, real_inode, real_handle, 0, libc::SEEK_CUR as u32)
+                        .await
+                    {
+                        Ok(r) => r.offset,
+                        Err(_) => return Err(Error::from_raw_os_error(libc::EINVAL).into()),
+                    };
+
+                    // Check for potential overflow when adding the provided offset
+                    // This prevents invalid position calculations
+                    if let Some(new_offset) = current.checked_add(offset) {
+                        // Ensure the new offset is within valid bounds
+                        if new_offset > i64::MAX as u64 {
+                            return Err(Error::from_raw_os_error(libc::EINVAL).into());
+                        }
+
+                        // Actually set the underlying offset to the new value so behavior
+                        // matches passthrough which uses libc::lseek64 to set the fd offset.
+                        match layer
+                            .lseek(
+                                req,
+                                real_inode,
+                                real_handle,
+                                new_offset,
+                                libc::SEEK_SET as u32,
+                            )
+                            .await
+                        {
+                            Ok(_) => Ok(ReplyLSeek { offset: new_offset }),
+                            Err(_) => Err(Error::from_raw_os_error(libc::EINVAL).into()),
+                        }
+                    } else {
+                        Err(Error::from_raw_os_error(libc::EINVAL).into())
+                    }
+                }
+                // Any other whence value is invalid for directories
+                _ => Err(Error::from_raw_os_error(libc::EINVAL).into()),
+            }
+        } else {
+            // Keep the original lseek behavior for regular files
+            // Delegate directly to the underlying layer
+            let (layer, real_inode, real_handle) = self.find_real_info_from_handle(fh).await?;
+            layer
+                .lseek(req, real_inode, real_handle, offset, whence)
+                .await
+        }
     }
 
     async fn interrupt(&self, _req: Request, _unique: u64) -> Result<()> {

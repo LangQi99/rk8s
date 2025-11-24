@@ -6,6 +6,7 @@
 use clap::Parser;
 use libfuse_fs::overlayfs::{OverlayArgs, mount_fs};
 use tokio::signal;
+use tracing::debug;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "OverlayFS example for integration tests")]
@@ -20,7 +21,7 @@ struct Args {
     #[arg(long)]
     lowerdir: Vec<String>,
     /// Use privileged mount instead of unprivileged (default false)
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     privileged: bool,
     /// Options, currently contains uid/gid mapping info
     #[arg(long, short)]
@@ -62,9 +63,19 @@ fn parse_bind_mount(s: &str) -> Result<BindMountArg, String> {
     })
 }
 
+fn set_log() {
+    let log_level = "trace";
+    let filter_str = format!("libfuse_fs={}", log_level);
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter_str));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    set_log();
+    debug!("Starting overlay filesystem with args: {:?}", args);
 
     let bind_mounts = args.bind.iter().map(|b| (b.mount_point.clone(), b.host_path.clone(), b.readonly)).collect();
 

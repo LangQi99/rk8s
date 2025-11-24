@@ -1,17 +1,27 @@
 // src/main.rs
 
 use clap::{Parser, Subcommand};
+use rustls::crypto::CryptoProvider;
 
 mod bundle;
 mod commands;
 mod cri;
 mod daemon;
+mod dns;
 mod network;
+mod quic;
 mod rootpath;
 mod task;
 
-use commands::{compose::ComposeCommand, container::ContainerCommand, pod::PodCommand};
-use commands::{compose::compose_execute, container::container_execute, pod::pod_execute};
+use commands::{
+    compose::ComposeCommand, container::ContainerCommand, pod::PodCommand,
+    replicaset::ReplicaSetCommand,
+};
+use commands::{
+    compose::compose_execute, container::container_execute, pod::pod_execute,
+    replicaset::replicaset_execute,
+};
+use tracing::error;
 
 use crate::commands::volume::{VolumeCommand, volume_execute};
 
@@ -34,6 +44,7 @@ impl Cli {
             Workload::Container(cmd) => container_execute(cmd),
             Workload::Compose(cmd) => compose_execute(cmd),
             Workload::Volume(cmd) => volume_execute(cmd),
+            Workload::Replicaset(cmd) => replicaset_execute(cmd),
         }
     }
 }
@@ -55,9 +66,14 @@ enum Workload {
 
     #[command(subcommand, about = "Manage the volume type", alias = "v")]
     Volume(VolumeCommand),
+    #[command(subcommand, about = "Manage ReplicaSets", alias = "rs")]
+    Replicaset(ReplicaSetCommand),
 }
 
 fn main() -> Result<(), anyhow::Error> {
+    CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+        .expect("failed to install default CryptoProvider");
+
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive(
@@ -71,6 +87,5 @@ fn main() -> Result<(), anyhow::Error> {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let cli = Cli::parse();
-    cli.run()
-        .inspect_err(|err| eprintln!("Failed to run: {err}"))
+    cli.run().inspect_err(|err| error!("Failed to run: {err}"))
 }

@@ -26,10 +26,12 @@ use std::convert::TryInto;
 
 use chrono::{DateTime, Local};
 use tabwriter::TabWriter;
+use tracing::info;
 
 pub mod compose;
 pub mod container;
 pub mod pod;
+pub mod replicaset;
 pub mod utils;
 pub mod volume;
 
@@ -71,7 +73,7 @@ pub fn start(args: Start, root_path: PathBuf) -> Result<()> {
 //
 pub fn state(args: State, root_path: PathBuf) -> Result<()> {
     let container = load_container(root_path, &args.container_id)?;
-    println!("{}", serde_json::to_string_pretty(&container.state)?);
+    info!("{}", serde_json::to_string_pretty(&container.state)?);
     //std::process::exit(0);
     Ok(())
 }

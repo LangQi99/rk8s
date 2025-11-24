@@ -1,6 +1,5 @@
 use crate::test_common::get_pod_config;
 use anyhow::anyhow;
-//use rkl::task::PodTask;
 use common::{ContainerRes, PodTask, Resource};
 use rkl::commands::pod::standalone::create_pod;
 use rkl::commands::pod::standalone::delete_pod;
@@ -9,6 +8,7 @@ use rkl::{commands::pod::run_pod, task::TaskRunner};
 use serde_json::Value;
 use serial_test::serial;
 use std::{env, fs::File, io::Write, path::Path};
+use tracing::error;
 
 mod test_common;
 
@@ -64,7 +64,7 @@ fn create(config: PodTask, run: bool) -> Result<(), anyhow::Error> {
 fn try_create(config: PodTask, run: bool) {
     let res = create(config, run);
     if res.is_err() {
-        println!(
+        error!(
             "\
             Failed to create pod. This may be not a test failed, but caused by wrong config.\n\
             tips:\n\

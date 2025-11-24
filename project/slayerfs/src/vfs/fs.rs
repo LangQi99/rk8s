@@ -1,253 +1,347 @@
-//! FUSE/SDK 友好的简化 VFS：基于路径的 create/mkdir/read/write/readdir/stat。
+//! FUSE/SDK-friendly VFS with path-based create/mkdir/read/write/readdir/stat support.
 
 use crate::chuck::chunk::ChunkLayout;
 use crate::chuck::reader::ChunkReader;
 use crate::chuck::store::BlockStore;
-use crate::chuck::util::{ChunkSpan, split_file_range_into_chunks};
 use crate::chuck::writer::ChunkWriter;
-use crate::meta::MetaStore;
-use crate::meta::entities::content_meta::EntryType;
+use crate::meta::client::{MetaClient, MetaClientOptions};
+use crate::meta::config::{CacheCapacity, CacheTtl};
+use crate::meta::store::MetaError;
+use crate::meta::{MetaLayer, MetaStore};
+use dashmap::{DashMap, Entry};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileType {
-    File,
-    Dir,
+// Re-export types from meta::store for convenience
+pub use crate::meta::store::{DirEntry, FileAttr, FileType};
+use crate::vfs::handles::{FileHandle, HandleFlags};
+use crate::vfs::inode::Inode;
+use crate::vfs::io::FileRegistry;
+
+struct HandleRegistry {
+    handles: DashMap<i64, Vec<FileHandle>>,
+    handle_ino: DashMap<u64, i64>,
+    next_fh: AtomicU64,
 }
 
-impl From<EntryType> for FileType {
-    fn from(entry_type: EntryType) -> Self {
-        match entry_type {
-            EntryType::File => FileType::File,
-            EntryType::Directory => FileType::Dir,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FileAttr {
-    pub ino: i64,
-    pub size: u64,
-    pub kind: FileType,
-}
-
-#[derive(Clone, Debug)]
-pub struct DirEntry {
-    pub name: String,
-    pub ino: i64,
-    pub kind: FileType,
-}
-
-/// 命名空间节点（内存）
-///
-/// 目标与角色：
-/// - 这是 Fs 内部用于路径解析与目录树操作的最小“目录项（dentry）/inode 影子”。
-/// - 仅承载名称层级关系（父子关系、基名、类型），不保存持久化元数据（大小、时间戳等）。
-/// - 持久化信息（如 size、切片映射）交由 `MetaStore` 管理；`VNode` 只负责“能找到这个 inode 吗、它是目录还是文件、它的孩子是谁”。
-///
-/// 使用与并发：
-/// - 通过 `Fs::ns: Mutex<Namespace>` 进行统一并发保护；所有对 `VNode` 的读写都需在持锁状态下进行。
-/// - 根节点的 `parent` 为 `None`，其余节点必须有父（除非处于构建中的临时状态）。
-/// - 目录节点的 `children` 保存“基名 -> 子 inode”的映射；文件节点的 `children` 为空。
-///
-/// 限制与简化：
-/// - 不包含权限、属主、时间戳、链接计数等；未来如需对接 FUSE/SDK，可在 `MetaStore`/`FileAttr` 扩展。
-/// - `name` 为基名（单个路径段），不是完整路径；完整路径由 `Fs::lookup`/`Namespace::lookup` 提供辅助映射。
-struct VNode {
-    /// 节点类型：文件或目录（影响允许的操作以及 `children` 是否有效）
-    kind: FileType,
-    /// 该节点在其父目录下的基名（不含斜杠）
-    name: String,
-    /// 父目录 inode；仅根为 None
-    parent: Option<i64>,
-    /// 目录子项：基名 -> 子 inode；文件为空
-    children: HashMap<String, i64>,
-}
-
-impl VNode {
-    /// 构造目录节点；`children` 初始为空，由上层在持锁状态下填充。
-    fn dir(name: String, parent: Option<i64>) -> Self {
+impl HandleRegistry {
+    fn new() -> Self {
         Self {
-            kind: FileType::Dir,
-            name,
-            parent,
-            children: HashMap::new(),
+            handles: DashMap::new(),
+            handle_ino: DashMap::new(),
+            next_fh: AtomicU64::new(1),
         }
     }
-    /// 构造文件节点；`children` 始终保持为空。
-    fn file(name: String, parent: Option<i64>) -> Self {
+
+    async fn allocate(&self, ino: i64, flags: HandleFlags) -> u64 {
+        let fh = self.next_fh.fetch_add(1, Ordering::Relaxed);
+        self.handles
+            .entry(ino)
+            .or_default()
+            .push(FileHandle::new(fh, flags));
+        self.handle_ino.insert(fh, ino);
+        fh
+    }
+
+    async fn release(&self, fh: u64) -> Option<FileHandle> {
+        let ino = self.handle_ino.remove(&fh)?.1;
+        let mut entry = self.handles.get_mut(&ino)?;
+        if let Some(idx) = entry.iter().position(|h| h.fh == fh) {
+            let handle = entry.remove(idx);
+            let empty = entry.is_empty();
+            drop(entry);
+            if empty {
+                self.handles.remove(&ino);
+            }
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
+    async fn with_handle_mut<R>(&self, fh: u64, f: impl FnOnce(&mut FileHandle) -> R) -> Option<R> {
+        let ino = *self.handle_ino.get(&fh)?.value();
+        let mut entry = self.handles.get_mut(&ino)?;
+        entry.iter_mut().find(|h| h.fh == fh).map(f)
+    }
+
+    async fn handles_for(&self, ino: i64) -> Vec<u64> {
+        self.handles
+            .get(&ino)
+            .map(|entry| entry.iter().map(|h| h.fh).collect())
+            .unwrap_or_default()
+    }
+}
+
+struct ModifiedTracker {
+    entries: Mutex<HashMap<i64, Instant>>,
+}
+
+impl ModifiedTracker {
+    fn new() -> Self {
         Self {
-            kind: FileType::File,
-            name,
-            parent,
-            children: HashMap::new(),
+            entries: Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn touch(&self, ino: i64) {
+        let mut guard = self.entries.lock().await;
+        guard.insert(ino, Instant::now());
+    }
+
+    async fn modified_since(&self, ino: i64, since: Instant) -> bool {
+        let guard = self.entries.lock().await;
+        guard.get(&ino).map(|&ts| ts >= since).unwrap_or(false)
+    }
+
+    async fn cleanup_older_than(&self, ttl: Duration) {
+        let now = Instant::now();
+        let cutoff = now.checked_sub(ttl).unwrap_or(now);
+        let mut guard = self.entries.lock().await;
+        guard.retain(|_, ts| *ts >= cutoff);
     }
 }
 
-/// 命名空间集合：用单一互斥锁保护节点表与路径索引，避免多把锁的死锁风险。
-struct Namespace {
-    /// inode -> VNode
-    nodes: HashMap<i64, VNode>,
-    /// 规范化路径 -> inode（加速路径查询）
-    lookup: HashMap<String, i64>,
-}
-
-/// 基于路径的简化 VFS（FUSE/SDK 友好）
-///
-/// 目标概览：
-/// - 提供接近 POSIX 的基础文件/目录操作（mkdir_p、create、read、write、readdir、stat 等），便于上层 SDK 与 FUSE 对接。
-/// - 命名空间使用内存结构维护（`Namespace`），持久化数据与尺寸由下层 `MetaStore` 与 `BlockStore` 负责。
-/// - 按块/按 Chunk 的映射写读，读路径对“洞”进行零填充，写路径按跨度拆分并提交。
-///
-/// 并发与一致性：
-/// - 使用单把互斥锁 `ns: Mutex<Namespace>` 保护目录树与路径索引，避免多锁顺序导致的死锁。
-/// - 元数据更新（如 size）通过 `MetaStore` 的事务提交；当前实现将一次 write 的 size 更新聚合为一次提交。
-///
-/// 约束与注意事项：
-/// - 错误返回暂以 `String` 描述，后续建议改为枚举并映射标准 errno。
-/// - 不实现权限/时间戳/硬链接等高级语义；`FileAttr` 仅包含 kind 与 size。
-/// - unlink/rmdir 目前仅调整命名空间与 size，真实块/切片的 GC 由后续实现负责。
-#[allow(unused)]
-#[allow(clippy::upper_case_acronyms)]
-pub struct VFS<S: BlockStore, M: MetaStore> {
+pub struct ChunkIoFactory<S, M>
+where
+    S: BlockStore,
+    M: MetaStore,
+{
     layout: ChunkLayout,
-    store: tokio::sync::Mutex<S>,
-    meta: M,
-    base: i64,
-    ns: Mutex<Namespace>, // 简单内存命名空间（节点+查找表）
+    store: Arc<S>,
+    meta: Arc<M>,
+}
+
+impl<S, M> ChunkIoFactory<S, M>
+where
+    S: BlockStore,
+    M: MetaStore,
+{
+    fn new(layout: ChunkLayout, store: Arc<S>, meta: Arc<M>) -> Self {
+        Self {
+            layout,
+            store,
+            meta,
+        }
+    }
+
+    pub fn layout(&self) -> ChunkLayout {
+        self.layout
+    }
+
+    pub fn reader(&self, chunk_id: u64) -> ChunkReader<'_, S, M> {
+        ChunkReader::new(
+            self.layout,
+            chunk_id,
+            self.store.as_ref(),
+            self.meta.as_ref(),
+        )
+    }
+
+    pub fn writer(&self, chunk_id: u64) -> ChunkWriter<'_, S, M> {
+        ChunkWriter::new(
+            self.layout,
+            chunk_id,
+            self.store.as_ref(),
+            self.meta.as_ref(),
+        )
+    }
+}
+
+struct VfsState<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    handles: HandleRegistry,
+    files: FileRegistry<S, M>,
+    modified: ModifiedTracker,
+}
+
+impl<S, M> VfsState<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    fn new() -> Self {
+        Self {
+            handles: HandleRegistry::new(),
+            files: FileRegistry::new(),
+            modified: ModifiedTracker::new(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub struct VfsCore<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    layout: ChunkLayout,
+    meta_layer: Arc<MetaClient<M>>,
+    chunk_io: Arc<ChunkIoFactory<S, M>>,
     root: i64,
 }
+
+impl<S, M> VfsCore<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    fn new(
+        layout: ChunkLayout,
+        store: Arc<S>,
+        meta_store: Arc<M>,
+        meta_layer: Arc<MetaClient<M>>,
+        root: i64,
+    ) -> Self {
+        let chunk_io = Arc::new(ChunkIoFactory::new(
+            layout,
+            Arc::clone(&store),
+            Arc::clone(&meta_store),
+        ));
+        Self {
+            layout,
+            meta_layer,
+            chunk_io,
+            root,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MetaClientConfig {
+    pub capacity: CacheCapacity,
+    pub ttl: CacheTtl,
+    pub options: MetaClientOptions,
+}
+
+impl Default for MetaClientConfig {
+    fn default() -> Self {
+        Self {
+            capacity: CacheCapacity::default(),
+            ttl: CacheTtl::for_sqlite(),
+            options: MetaClientOptions::default(),
+        }
+    }
+}
+
+#[allow(unused)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Clone)]
+pub struct VFS<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    core: Arc<VfsCore<S, M>>,
+    state: Arc<VfsState<S, M>>,
+}
+
 #[allow(dead_code)]
-impl<S: BlockStore, M: MetaStore> VFS<S, M> {
-    /// 公开根 inode（便于 FUSE 处理 `.`/`..` 等）
-    pub fn root_ino(&self) -> i64 {
-        self.root
+impl<S, M> VFS<S, M>
+where
+    S: BlockStore,
+    M: MetaStore + 'static,
+{
+    pub async fn new(layout: ChunkLayout, store: S, meta: M) -> Result<Self, String> {
+        Self::with_meta_client_config(layout, store, meta, MetaClientConfig::default()).await
     }
 
-    /// 获取给定 inode 的父目录 inode；根的父视为根自身。
-    pub fn parent_of(&self, ino: i64) -> Option<i64> {
-        let ns = self.ns.lock().unwrap();
-        let vnode = ns.nodes.get(&ino)?;
-        Some(vnode.parent.unwrap_or(self.root))
+    pub async fn with_meta_layer(
+        layout: ChunkLayout,
+        store: S,
+        meta: M,
+        meta_layer: Arc<MetaClient<M>>,
+    ) -> Result<Self, String> {
+        let store = Arc::new(store);
+        let meta = Arc::new(meta);
+        Self::from_components(layout, store, meta, meta_layer)
     }
 
-    /// 由 inode 还原绝对路径（用于 FUSE open/read 等）
-    pub fn path_of(&self, ino: i64) -> Option<String> {
-        let ns = self.ns.lock().unwrap();
-        self.build_path(&ns, ino)
+    fn from_components(
+        layout: ChunkLayout,
+        store: Arc<S>,
+        meta: Arc<M>,
+        meta_layer: Arc<MetaClient<M>>,
+    ) -> Result<Self, String> {
+        let root_ino = meta_layer.root_ino();
+        let core = Arc::new(VfsCore::new(
+            layout,
+            Arc::clone(&store),
+            Arc::clone(&meta),
+            meta_layer,
+            root_ino,
+        ));
+        let state = Arc::new(VfsState::new());
+
+        Ok(Self { core, state })
     }
 
-    /// Build absolute path from inode while namespace is locked
-    fn build_path(&self, ns: &Namespace, ino: i64) -> Option<String> {
-        let mut cur = ino;
-        let mut parts: Vec<String> = Vec::new();
-        loop {
-            let vnode = ns.nodes.get(&cur)?;
-            if vnode.parent.is_none() {
-                break;
-            }
-            parts.push(vnode.name.clone());
-            cur = vnode.parent?;
-        }
-        if parts.is_empty() {
-            return Some("/".into());
-        }
-        parts.reverse();
-        let mut out = String::from("/");
-        out.push_str(&parts.join("/"));
-        Some(out)
-    }
+    pub async fn with_meta_client_config(
+        layout: ChunkLayout,
+        store: S,
+        meta: M,
+        config: MetaClientConfig,
+    ) -> Result<Self, String> {
+        let store = Arc::new(store);
+        let meta = Arc::new(meta);
 
-    /// 在父目录下按基名查找子项 inode；父必须是目录
-    pub fn child_of<'a>(&self, parent: i64, name: impl Into<&'a str>) -> Option<i64> {
-        let name = name.into();
-        let ns = self.ns.lock().unwrap();
-        let p = ns.nodes.get(&parent)?;
-        if p.kind != FileType::Dir {
-            return None;
-        }
-        p.children.get(name).cloned()
-    }
-
-    /// 按 inode 返回属性（kind 来自命名空间，size 来自 MetaStore）
-    pub async fn stat_ino(&self, ino: i64) -> Option<FileAttr> {
-        let kind = { self.ns.lock().unwrap().nodes.get(&ino).map(|v| v.kind)? };
-        let meta_attr = self.meta.stat(ino).await.ok().flatten()?;
-        Some(FileAttr {
-            ino,
-            size: meta_attr.size,
-            kind,
-        })
-    }
-
-    /// 按 inode 列目录项；非目录或不存在返回 None
-    pub async fn readdir_ino(&self, ino: i64) -> Option<Vec<DirEntry>> {
-        {
-            let ns = self.ns.lock().unwrap();
-            if let Some(vnode) = ns.nodes.get(&ino) {
-                if vnode.kind != FileType::Dir {
-                    return None;
-                }
-
-                if !vnode.children.is_empty() {
-                    let mut entries = Vec::new();
-                    for (name, &child_ino) in &vnode.children {
-                        if let Some(child_node) = ns.nodes.get(&child_ino) {
-                            entries.push(DirEntry {
-                                name: name.clone(),
-                                ino: child_ino,
-                                kind: child_node.kind,
-                            });
-                        }
-                    }
-                    return Some(entries);
-                }
-            }
-        }
-
-        let meta_entries = match self.meta.readdir(ino).await {
-            Ok(entries) => entries,
-            Err(_) => return None,
+        let ttl = if config.ttl.is_zero() {
+            CacheTtl::for_sqlite()
+        } else {
+            config.ttl.clone()
         };
 
-        {
-            let mut ns = self.ns.lock().unwrap();
+        let meta_client = MetaClient::with_options(
+            Arc::clone(&meta),
+            config.capacity.clone(),
+            ttl,
+            config.options.clone(),
+        );
 
-            ns.nodes
-                .entry(ino)
-                .or_insert_with(|| VNode::dir("".to_string(), None));
+        meta_client.initialize().await.map_err(|e| e.to_string())?;
 
-            if let Some(vnode) = ns.nodes.get_mut(&ino) {
-                vnode.children.clear();
+        let meta_layer: Arc<MetaClient<M>> = meta_client.clone();
 
-                for entry in &meta_entries {
-                    vnode.children.insert(entry.name.clone(), entry.ino);
-                }
-            }
+        Self::from_components(layout, store, meta, meta_layer)
+    }
 
-            // Insert child nodes and update path mapping
-            for entry in &meta_entries {
-                ns.nodes.insert(
-                    entry.ino,
-                    match entry.kind {
-                        FileType::Dir => VNode::dir(entry.name.clone(), Some(ino)),
-                        FileType::File => VNode::file(entry.name.clone(), Some(ino)),
-                    },
-                );
+    pub fn root_ino(&self) -> i64 {
+        self.core.root
+    }
 
-                // Update path lookup to enable path-based operations like write
-                if let Some(parent_path) = self.build_path(&ns, ino) {
-                    let child_path = if parent_path == "/" {
-                        format!("/{}", entry.name)
-                    } else {
-                        format!("{}/{}", parent_path, entry.name)
-                    };
-                    ns.lookup.insert(child_path, entry.ino);
-                }
-            }
-        }
+    /// get the node's parent inode.
+    pub async fn parent_of(&self, ino: i64) -> Option<i64> {
+        self.core.meta_layer.get_parent(ino).await.ok().flatten()
+    }
+
+    /// get the node's fullpath.
+    pub async fn path_of(&self, ino: i64) -> Option<String> {
+        self.core.meta_layer.get_path(ino).await.ok().flatten()
+    }
+
+    /// get the node's child inode by name.
+    pub async fn child_of(&self, parent: i64, name: &str) -> Option<i64> {
+        self.core
+            .meta_layer
+            .lookup(parent, name)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub async fn stat_ino(&self, ino: i64) -> Option<FileAttr> {
+        self.core.meta_layer.stat(ino).await.ok().flatten()
+    }
+
+    /// List directory entries by inode
+    pub async fn readdir_ino(&self, ino: i64) -> Option<Vec<DirEntry>> {
+        let meta_entries = self.core.meta_layer.readdir(ino).await.ok()?;
 
         let entries: Vec<DirEntry> = meta_entries
             .into_iter()
@@ -260,96 +354,8 @@ impl<S: BlockStore, M: MetaStore> VFS<S, M> {
         Some(entries)
     }
 
-    /// 创建 VFS，自动分配根目录 inode。
-    /// 构造 VFS 实例：
-    /// - 分配并注册根目录 inode（/）。
-    /// - 初始化内存命名空间（nodes + 路径索引）。
-    /// - 约束：根目录的 parent 为 None。
-    pub async fn new(layout: ChunkLayout, store: S, meta: M) -> Result<Self, String> {
-        meta.initialize().await.map_err(|e| e.to_string())?;
-
-        let mut nodes = HashMap::new();
-        let mut lookup = HashMap::new();
-
-        let root_ino = meta.root_ino();
-        nodes.insert(root_ino, VNode::dir("".into(), None)); // 根目录名为空
-        lookup.insert("/".into(), root_ino);
-
-        // 设定 chunk_id 计算的基数，避免与 chunk 索引冲突（简化实现）。
-        let base = 1_000_000_000i64;
-        let ns = Namespace { nodes, lookup };
-        let vfs = Self {
-            layout,
-            store: tokio::sync::Mutex::new(store),
-            meta,
-            base,
-            ns: Mutex::new(ns),
-            root: root_ino,
-        };
-
-        vfs.load_tree_from_meta().await?;
-
-        Ok(vfs)
-    }
-
-    /// Load entire directory tree from MetaStore to rebuild namespace.
-    /// Critical for remount scenarios to restore all path mappings.
-    /// TODO: Optimize loading for deep directory trees.
-    async fn load_tree_from_meta(&self) -> Result<(), String> {
-        let mut queue: Vec<(String, i64)> = vec![("/".to_string(), self.root)];
-
-        while let Some((path, ino)) = queue.pop() {
-            let entries = match self.meta.readdir(ino).await {
-                Ok(entries) => entries,
-                Err(e) => {
-                    log::warn!("Failed to readdir {} (ino={}): {:?}", path, ino, e);
-                    continue;
-                }
-            };
-
-            {
-                let mut ns = self.ns.lock().unwrap();
-
-                ns.nodes
-                    .entry(ino)
-                    .or_insert_with(|| VNode::dir(path.clone(), None));
-
-                if let Some(vnode) = ns.nodes.get_mut(&ino) {
-                    vnode.children.clear();
-                    for entry in &entries {
-                        vnode.children.insert(entry.name.clone(), entry.ino);
-                    }
-                }
-
-                for entry in &entries {
-                    let child_path = if path == "/" {
-                        format!("/{}", entry.name)
-                    } else {
-                        format!("{}/{}", path, entry.name)
-                    };
-
-                    ns.nodes.insert(
-                        entry.ino,
-                        match entry.kind {
-                            FileType::Dir => VNode::dir(entry.name.clone(), Some(ino)),
-                            FileType::File => VNode::file(entry.name.clone(), Some(ino)),
-                        },
-                    );
-
-                    ns.lookup.insert(child_path.clone(), entry.ino);
-
-                    if entry.kind == FileType::Dir {
-                        queue.push((child_path, entry.ino));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// 规范化路径（内部）：
-    /// - 去除多余分隔，确保以 `/` 开头；不解析 `.`/`..`（后续可扩展）。
+    /// Normalize a path by stripping redundant separators and ensuring it starts with `/`.
+    /// Does not resolve `.` or `..`.
     fn norm_path(p: &str) -> String {
         if p.is_empty() {
             return "/".into();
@@ -360,7 +366,7 @@ impl<S: BlockStore, M: MetaStore> VFS<S, M> {
         if out.is_empty() { "/".into() } else { out }
     }
 
-    /// 拆分为父目录与基名（内部）。
+    /// Split a normalized path into parent directory and basename.
     fn split_dir_file(path: &str) -> (String, String) {
         let n = path.rfind('/').unwrap_or(0);
         if n == 0 {
@@ -370,196 +376,287 @@ impl<S: BlockStore, M: MetaStore> VFS<S, M> {
         }
     }
 
-    fn chunk_id_for(&self, ino: i64, chunk_index: u64) -> i64 {
-        ino.checked_mul(self.base).unwrap_or(ino) + chunk_index as i64
-    }
-
-    /// mkdir -p 风格：创建多级目录。
-    /// 递归创建目录（mkdir -p）：
-    /// - 若部分路径段存在且为“文件”，返回错误 `"not a directory"`。
-    /// - 幂等：已存在则返回现有 inode。
-    /// - 返回：目标目录的 inode。
+    /// Recursively create directories (mkdir -p behavior).
+    /// - If an intermediate component exists as a file, return "not a directory".
+    /// - Idempotent: existing directories simply return their inode.
+    /// - Returns the inode of the target directory.
     pub async fn mkdir_p(&self, path: &str) -> Result<i64, String> {
         let path = Self::norm_path(path);
         if &path == "/" {
-            return Ok(self.root);
+            return Ok(self.core.root);
         }
-        if let Some(ino) = { self.ns.lock().unwrap().lookup.get(&path).cloned() } {
+        if let Ok(Some((ino, _attr))) = self.core.meta_layer.lookup_path(&path).await {
             return Ok(ino);
         }
-        // 逐段创建
-        let mut cur_ino = self.root;
-        let mut cur_path = String::from("/");
+        let mut cur_ino = self.core.root;
         for part in path.trim_start_matches('/').split('/') {
             if part.is_empty() {
                 continue;
             }
-            if cur_path != "/" {
-                cur_path.push('/');
-            }
-            cur_path.push_str(part);
-            if let Some(ino) = { self.ns.lock().unwrap().lookup.get(&cur_path).cloned() } {
-                if let Some(v) = { self.ns.lock().unwrap().nodes.get(&ino).map(|v| v.kind) }
-                    && v != FileType::Dir
-                {
-                    return Err("not a directory".into());
+            match self.core.meta_layer.lookup(cur_ino, part).await {
+                Ok(Some(ino)) => {
+                    if let Ok(Some(attr)) = self.core.meta_layer.stat(ino).await
+                        && attr.kind != FileType::Dir
+                    {
+                        return Err("not a directory".into());
+                    }
+                    cur_ino = ino;
                 }
-                cur_ino = ino;
-                continue;
-            }
-            // 新目录 inode
-            let ino = self
-                .meta
-                .mkdir(cur_ino, part.to_string())
-                .await
-                .map_err(|e| e.to_string())?;
-            {
-                let mut ns = self.ns.lock().unwrap();
-                ns.nodes
-                    .insert(ino, VNode::dir(part.to_string(), Some(cur_ino)));
-                if let Some(parent) = ns.nodes.get_mut(&cur_ino) {
-                    parent.children.insert(part.to_string(), ino);
+                _ => {
+                    let ino = self
+                        .core
+                        .meta_layer
+                        .mkdir(cur_ino, part.to_string())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    self.state.modified.touch(cur_ino).await;
+                    self.state.modified.touch(ino).await;
+                    cur_ino = ino;
                 }
-                ns.lookup.insert(cur_path.clone(), ino);
             }
-            cur_ino = ino;
         }
         Ok(cur_ino)
     }
 
-    /// 创建文件（父目录已存在或通过 mkdir_p 创建）。
-    /// 创建普通文件：
-    /// - 如父目录不存在，会先行 `mkdir_p`。
-    /// - 如同名目录已存在，返回 `"is a directory"`；同名文件存在则返回其 inode。
-    /// - 返回：新建或已有文件的 inode。
+    /// Create a regular file (running `mkdir_p` on its parent if needed).
+    /// - If a directory with the same name exists, returns "is a directory".
+    /// - If the file already exists, returns its inode instead of creating a new one.
     pub async fn create_file(&self, path: &str) -> Result<i64, String> {
         let path = Self::norm_path(path);
         let (dir, name) = Self::split_dir_file(&path);
         let dir_ino = self.mkdir_p(&dir).await?;
-        // 目录必须是目录
-        if let Some(kind) = { self.ns.lock().unwrap().nodes.get(&dir_ino).map(|d| d.kind) }
-            && kind != FileType::Dir
+
+        // check the file exists and then return.
+        if let Ok(Some(ino)) = self.core.meta_layer.lookup(dir_ino, &name).await
+            && let Ok(Some(attr)) = self.core.meta_layer.stat(ino).await
         {
-            return Err("not a directory".into());
-        }
-        // 冲突：同名目录存在
-        if let Some(ino) = {
-            self.ns
-                .lock()
-                .unwrap()
-                .nodes
-                .get(&dir_ino)
-                .and_then(|d| d.children.get(&name))
-                .cloned()
-        } {
-            let kind = {
-                self.ns
-                    .lock()
-                    .unwrap()
-                    .nodes
-                    .get(&ino)
-                    .map(|v| v.kind)
-                    .ok_or_else(|| "not found".to_string())?
-            };
-            return if kind == FileType::Dir {
+            return if attr.kind == FileType::Dir {
                 Err("is a directory".into())
             } else {
                 Ok(ino)
             };
         }
+
         let ino = self
-            .meta
+            .core
+            .meta_layer
             .create_file(dir_ino, name.clone())
             .await
             .map_err(|e| e.to_string())?;
-        {
-            let mut ns = self.ns.lock().unwrap();
-            ns.nodes
-                .insert(ino, VNode::file(name.clone(), Some(dir_ino)));
-            if let Some(d) = ns.nodes.get_mut(&dir_ino) {
-                d.children.insert(name.clone(), ino);
-            }
-            ns.lookup.insert(path, ino);
-        }
+        self.state.modified.touch(dir_ino).await;
+        self.state.modified.touch(ino).await;
         Ok(ino)
     }
 
-    /// 获取文件属性：
-    /// - kind 来源于内存命名空间；size 来源于 `MetaStore`（默认为 0）。
-    /// - 未找到返回 None。
-    pub async fn stat(&self, path: &str) -> Option<FileAttr> {
-        let path = Self::norm_path(path);
-        let ino = { self.ns.lock().unwrap().lookup.get(&path).cloned() }?;
-        let kind = { self.ns.lock().unwrap().nodes.get(&ino).map(|v| v.kind)? };
-        let meta_attr = self.meta.stat(ino).await.ok().flatten()?;
-        Some(FileAttr {
-            ino,
-            size: meta_attr.size,
-            kind,
-        })
+    /// Create a hard link at `link_path` that references `existing_path`.
+    pub async fn link(&self, existing_path: &str, link_path: &str) -> Result<FileAttr, String> {
+        let existing_path = Self::norm_path(existing_path);
+        let link_path = Self::norm_path(link_path);
+
+        if existing_path == "/" {
+            return Err("is a directory".into());
+        }
+        if link_path == "/" {
+            return Err("invalid path".into());
+        }
+
+        let (src_ino, src_kind) = self
+            .core
+            .meta_layer
+            .lookup_path(&existing_path)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+
+        if src_kind == FileType::Dir {
+            return Err("is a directory".into());
+        }
+
+        let (parent_path, name) = Self::split_dir_file(&link_path);
+        if name.is_empty() {
+            return Err("invalid name".into());
+        }
+
+        let parent_ino = if &parent_path == "/" {
+            self.core.root
+        } else {
+            self.core
+                .meta_layer
+                .lookup_path(&parent_path)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "parent not found".to_string())?
+                .0
+        };
+
+        let parent_attr = self
+            .core
+            .meta_layer
+            .stat(parent_ino)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "parent not found".to_string())?;
+        if parent_attr.kind != FileType::Dir {
+            return Err("not a directory".into());
+        }
+
+        if self
+            .core
+            .meta_layer
+            .lookup(parent_ino, &name)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Err("already exists".into());
+        }
+
+        let attr = self
+            .core
+            .meta_layer
+            .link(src_ino, parent_ino, &name)
+            .await
+            .map_err(|e| match e {
+                MetaError::AlreadyExists { .. } => "already exists".to_string(),
+                MetaError::ParentNotFound(_) => "parent not found".to_string(),
+                MetaError::NotDirectory(_) => "not a directory".to_string(),
+                MetaError::NotFound(_) => "not found".to_string(),
+                MetaError::NotSupported(_) | MetaError::NotImplemented => {
+                    "not supported".to_string()
+                }
+                _ => e.to_string(),
+            })?;
+
+        self.state.modified.touch(parent_ino).await;
+        self.state.modified.touch(src_ino).await;
+
+        Ok(attr)
     }
 
-    /// 列举目录：
-    /// - 返回目录项列表；路径不存在或非目录返回 None。
-    /// - 不包含 "." 与".."（可按需添加）。
+    /// Create a symbolic link at `link_path` pointing to `target`.
+    pub async fn create_symlink(
+        &self,
+        link_path: &str,
+        target: &str,
+    ) -> Result<(i64, FileAttr), String> {
+        let link_path = Self::norm_path(link_path);
+        if link_path == "/" {
+            return Err("invalid path".into());
+        }
+        let (dir, name) = Self::split_dir_file(&link_path);
+        if name.is_empty() {
+            return Err("invalid name".into());
+        }
+
+        let parent_ino = if &dir == "/" {
+            self.core.root
+        } else {
+            self.core
+                .meta_layer
+                .lookup_path(&dir)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "parent not found".to_string())?
+                .0
+        };
+
+        let parent_attr = self
+            .core
+            .meta_layer
+            .stat(parent_ino)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "parent not found".to_string())?;
+        if parent_attr.kind != FileType::Dir {
+            return Err("not a directory".into());
+        }
+
+        if self
+            .core
+            .meta_layer
+            .lookup(parent_ino, &name)
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Err("already exists".into());
+        }
+
+        let (ino, attr) = self
+            .core
+            .meta_layer
+            .symlink(parent_ino, &name, target)
+            .await
+            .map_err(|e| match e {
+                MetaError::NotSupported(_) | MetaError::NotImplemented => {
+                    "not supported".to_string()
+                }
+                _ => e.to_string(),
+            })?;
+
+        self.state.modified.touch(parent_ino).await;
+        self.state.modified.touch(ino).await;
+
+        Ok((ino, attr))
+    }
+
+    /// Fetch a file's attributes (kind/size come from the MetaStore); returns None when missing.
+    pub async fn stat(&self, path: &str) -> Option<FileAttr> {
+        let path = Self::norm_path(path);
+        let (ino, _) = self.core.meta_layer.lookup_path(&path).await.ok()??;
+        let meta_attr = self.core.meta_layer.stat(ino).await.ok().flatten()?;
+        Some(meta_attr)
+    }
+
+    /// Read a symlink target by inode.
+    pub async fn readlink_ino(&self, ino: i64) -> Result<String, String> {
+        let attr = self
+            .core
+            .meta_layer
+            .stat(ino)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+        if attr.kind != FileType::Symlink {
+            return Err("not a symlink".into());
+        }
+
+        self.core
+            .meta_layer
+            .read_symlink(ino)
+            .await
+            .map_err(|e| match e {
+                MetaError::NotSupported(_) | MetaError::NotImplemented => {
+                    "not supported".to_string()
+                }
+                _ => e.to_string(),
+            })
+    }
+
+    /// Read a symlink target by path.
+    pub async fn readlink(&self, path: &str) -> Result<String, String> {
+        let path = Self::norm_path(path);
+        let (ino, kind) = self
+            .core
+            .meta_layer
+            .lookup_path(&path)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+        if kind != FileType::Symlink {
+            return Err("not a symlink".into());
+        }
+
+        self.readlink_ino(ino).await
+    }
+
+    /// List directory entries; returns None if the path is missing or not a directory.
+    /// `.` and `..` are not included.
     pub async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
         let path = Self::norm_path(path);
+        let (ino, _) = self.core.meta_layer.lookup_path(&path).await.ok()??;
 
-        let ino = self.ns.lock().unwrap().lookup.get(&path).cloned()?;
-
-        {
-            let ns = self.ns.lock().unwrap();
-            if let Some(vnode) = ns.nodes.get(&ino) {
-                if vnode.kind != FileType::Dir {
-                    return None;
-                }
-
-                if !vnode.children.is_empty() {
-                    let mut entries = Vec::new();
-                    for (name, &child_ino) in &vnode.children {
-                        if let Some(child_node) = ns.nodes.get(&child_ino) {
-                            entries.push(DirEntry {
-                                name: name.clone(),
-                                ino: child_ino,
-                                kind: child_node.kind,
-                            });
-                        }
-                    }
-                    return Some(entries);
-                }
-            }
-        }
-
-        let meta_entries = self.meta.readdir(ino).await.ok()?;
-
-        {
-            let mut ns = self.ns.lock().unwrap();
-
-            if let Some(vnode) = ns.nodes.get_mut(&ino) {
-                vnode.children.clear();
-
-                for entry in &meta_entries {
-                    vnode.children.insert(entry.name.clone(), entry.ino);
-                }
-            }
-
-            for entry in &meta_entries {
-                let child_path = if path == "/" {
-                    format!("/{}", entry.name)
-                } else {
-                    format!("{}/{}", path, entry.name)
-                };
-
-                ns.nodes.insert(
-                    entry.ino,
-                    match entry.kind {
-                        FileType::Dir => VNode::dir(entry.name.clone(), Some(ino)),
-                        FileType::File => VNode::file(entry.name.clone(), Some(ino)),
-                    },
-                );
-                ns.lookup.insert(child_path, entry.ino);
-            }
-        }
+        let meta_entries = self.core.meta_layer.readdir(ino).await.ok()?;
 
         let entries: Vec<DirEntry> = meta_entries
             .into_iter()
@@ -572,276 +669,328 @@ impl<S: BlockStore, M: MetaStore> VFS<S, M> {
         Some(entries)
     }
 
-    /// 路径是否存在。
-    /// 路径是否存在（快速查询）。
-    pub fn exists(&self, path: &str) -> bool {
+    /// Check whether a path exists.
+    pub async fn exists(&self, path: &str) -> bool {
         let path = Self::norm_path(path);
-        self.ns.lock().unwrap().lookup.contains_key(&path)
+        matches!(self.core.meta_layer.lookup_path(&path).await, Ok(Some(_)))
     }
 
-    /// 删除文件（不支持目录）。
-    /// 删除文件：
-    /// - 仅适用于普通文件；若为目录则返回 `"is a directory"`。
-    /// - 调整命名空间并移除路径映射；底层数据清理由后续 GC 处理。
+    /// Remove a regular file or symlink (directories are not supported here).
     pub async fn unlink(&self, path: &str) -> Result<(), String> {
         let path = Self::norm_path(path);
+        let (dir, name) = Self::split_dir_file(&path);
 
-        // Extract metadata from namespace while holding lock
-        let (parent, name, ino) = {
-            let ns = self.ns.lock().unwrap();
-            let ino = ns
-                .lookup
-                .get(&path)
-                .cloned()
-                .ok_or_else(|| "not found".to_string())?;
-            let vnode = ns.nodes.get(&ino).ok_or_else(|| "not found".to_string())?;
-
-            if vnode.kind != FileType::File {
-                return Err("is a directory".into());
-            }
-
-            let parent = vnode.parent.ok_or_else(|| "orphan".to_string())?;
-            let name = vnode.name.clone();
-            (parent, name, ino)
+        let parent_ino = if &dir == "/" {
+            self.core.root
+        } else {
+            self.core
+                .meta_layer
+                .lookup_path(&dir)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "parent not found".to_string())?
+                .0
         };
 
-        // Persist deletion to metadata store
-        self.meta
-            .unlink(parent, &name)
+        let ino = self
+            .core
+            .meta_layer
+            .lookup(parent_ino, &name)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+
+        let attr = self
+            .core
+            .meta_layer
+            .stat(ino)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+
+        if attr.kind == FileType::Dir {
+            return Err("is a directory".into());
+        }
+
+        self.core
+            .meta_layer
+            .unlink(parent_ino, &name)
             .await
             .map_err(|e| e.to_string())?;
-
-        // Update in-memory namespace
-        let mut ns = self.ns.lock().unwrap();
-        if let Some(p) = ns.nodes.get_mut(&parent) {
-            p.children.retain(|_, v| *v != ino);
-        }
-        ns.lookup.remove(&path);
-        ns.nodes.remove(&ino);
+        self.state.modified.touch(parent_ino).await;
+        self.state.modified.touch(ino).await;
 
         Ok(())
     }
 
-    /// 删除空目录（不允许删除根）。
-    /// 删除空目录：
-    /// - 根目录不可删除；非空返回 `"directory not empty"`。
+    /// Remove an empty directory (root cannot be removed; non-empty dirs error out).
     pub async fn rmdir(&self, path: &str) -> Result<(), String> {
         let path = Self::norm_path(path);
         if path == "/" {
             return Err("cannot remove root".into());
         }
 
-        // Validate and extract metadata from namespace
-        let (parent, name, ino) = {
-            let ns = self.ns.lock().unwrap();
-            let ino = ns
-                .lookup
-                .get(&path)
-                .cloned()
-                .ok_or_else(|| "not found".to_string())?;
-            let vnode = ns.nodes.get(&ino).ok_or_else(|| "not found".to_string())?;
+        let (dir, name) = Self::split_dir_file(&path);
 
-            if vnode.kind != FileType::Dir {
-                return Err("not a directory".into());
-            }
-            if !vnode.children.is_empty() {
-                return Err("directory not empty".into());
-            }
-
-            let parent = vnode.parent.ok_or_else(|| "orphan".to_string())?;
-            let name = vnode.name.clone();
-            (parent, name, ino)
+        let parent_ino = if &dir == "/" {
+            self.core.root
+        } else {
+            self.core
+                .meta_layer
+                .lookup_path(&dir)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "parent not found".to_string())?
+                .0
         };
 
-        // Persist deletion to metadata store
-        self.meta
-            .rmdir(parent, &name)
+        let ino = self
+            .core
+            .meta_layer
+            .lookup(parent_ino, &name)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+
+        let attr = self
+            .core
+            .meta_layer
+            .stat(ino)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+
+        if attr.kind != FileType::Dir {
+            return Err("not a directory".into());
+        }
+
+        let children = self
+            .core
+            .meta_layer
+            .readdir(ino)
             .await
             .map_err(|e| e.to_string())?;
-
-        // Update in-memory namespace
-        let mut ns = self.ns.lock().unwrap();
-        if let Some(p) = ns.nodes.get_mut(&parent) {
-            p.children.retain(|_, v| *v != ino);
+        if !children.is_empty() {
+            return Err("directory not empty".into());
         }
-        ns.lookup.remove(&path);
-        ns.nodes.remove(&ino);
+
+        self.core
+            .meta_layer
+            .rmdir(parent_ino, &name)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.state.modified.touch(parent_ino).await;
+        self.state.modified.touch(ino).await;
 
         Ok(())
     }
 
-    /// 通用重命名（支持文件和目录）
-    /// - 支持文件和目录；目标不得存在；目标父目录若不存在会自动创建。
-    /// - 在命名空间锁内进行迁移与路径更新；当前实现不支持覆盖。
+    /// Rename files or directories. The destination must not exist; parent directories are created as needed.
     pub async fn rename(&self, old: &str, new: &str) -> Result<(), String> {
         let old = Self::norm_path(old);
         let new = Self::norm_path(new);
+        let (old_dir, old_name) = Self::split_dir_file(&old);
         let (new_dir, new_name) = Self::split_dir_file(&new);
 
+        if self
+            .core
+            .meta_layer
+            .lookup_path(&new)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
         {
-            let ns = self.ns.lock().unwrap();
-            if ns.lookup.contains_key(&new) {
-                return Err("target exists".into());
-            }
+            return Err("target exists".into());
         }
 
-        // 获取源 inode
-        let ino = {
-            let ns = self.ns.lock().unwrap();
-            ns.lookup.get(&old).cloned()
-        }
-        .ok_or_else(|| "not found".to_string())?;
-
-        // Ensure target parent directory exists
-        self.mkdir_p(&new_dir).await?;
-
-        let new_dir_ino = {
-            let ns = self.ns.lock().unwrap();
-            ns.lookup.get(&new_dir).cloned()
-        }
-        .ok_or_else(|| "parent not found".to_string())?;
-
-        // Update namespace: move node and update parent-child relationships
-        let (old_parent_ino, old_name) = {
-            let mut ns = self.ns.lock().unwrap();
-            let (old_parent, old_name, is_dir) = {
-                let vnode = ns.nodes.get(&ino).ok_or_else(|| "not found".to_string())?;
-                (
-                    vnode.parent,
-                    vnode.name.clone(),
-                    vnode.kind == FileType::Dir,
-                )
-            };
-
-            let old_parent_ino = old_parent.ok_or_else(|| "parent not found".to_string())?;
-
-            // Remove from old parent
-            if let Some(parent) = old_parent
-                && let Some(p) = ns.nodes.get_mut(&parent)
-            {
-                p.children.retain(|_, v| *v != ino);
-            }
-
-            // Update node's parent and name
-            {
-                let vnode = ns
-                    .nodes
-                    .get_mut(&ino)
-                    .ok_or_else(|| "not found".to_string())?;
-                vnode.parent = Some(new_dir_ino);
-                vnode.name = new_name.clone();
-            }
-
-            // Add to new parent
-            if let Some(p) = ns.nodes.get_mut(&new_dir_ino) {
-                p.children.insert(new_name.clone(), ino);
-            }
-
-            // For directories: recursively update all descendant paths in lookup table
-            if is_dir {
-                let mut to_update = Vec::new();
-                for (path, path_ino) in ns.lookup.iter() {
-                    if path.starts_with(&old)
-                        && (*path == old || path.as_bytes().get(old.len()) == Some(&b'/'))
-                    {
-                        to_update.push((path.clone(), *path_ino));
-                    }
-                }
-
-                for (old_path, path_ino) in to_update {
-                    ns.lookup.remove(&old_path);
-                    let new_path = if old_path == old {
-                        new.clone()
-                    } else {
-                        format!("{}{}", new, &old_path[old.len()..])
-                    };
-                    ns.lookup.insert(new_path, path_ino);
-                }
-            } else {
-                ns.lookup.remove(&old);
-                ns.lookup.insert(new.clone(), ino);
-            }
-
-            (old_parent_ino, old_name)
+        let old_parent_ino = if &old_dir == "/" {
+            self.core.root
+        } else {
+            self.core
+                .meta_layer
+                .lookup_path(&old_dir)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "parent not found".to_string())?
+                .0
         };
 
-        // Persist rename operation to metadata store
-        self.meta
+        let new_dir_ino = self.mkdir_p(&new_dir).await?;
+
+        self.core
+            .meta_layer
             .rename(old_parent_ino, &old_name, new_dir_ino, new_name)
             .await
             .map_err(|e| e.to_string())?;
 
+        self.state.modified.touch(old_parent_ino).await;
+        self.state.modified.touch(new_dir_ino).await;
+
         Ok(())
     }
 
-    /// 截断/扩展文件大小（仅更新元数据，数据洞由读路径零填充）。
-    /// 截断/扩展文件大小：
-    /// - 仅更新 `MetaStore` 的 size；读路径会对“洞”返回 0 填充。
-    /// - 大小收缩不会即时清理块数据（后续可增加惰性 GC）。
+    /// Truncate/extend file size (metadata only; holes are read as zeros).
+    /// Shrinking does not eagerly reclaim block data.
     pub async fn truncate(&self, path: &str, size: u64) -> Result<(), String> {
         let path = Self::norm_path(path);
-        let ino = { self.ns.lock().unwrap().lookup.get(&path).cloned() }
+        let (ino, _) = self
+            .core
+            .meta_layer
+            .lookup_path(&path)
+            .await
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| "not found".to_string())?;
-        self.meta
+        if let Some(inode) = self.state.files.inode(ino) {
+            inode.update_size(size);
+        }
+        self.core
+            .meta_layer
             .set_file_size(ino, size)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.state.modified.touch(ino).await;
+        Ok(())
     }
 
-    /// 写文件（按文件偏移），内部映射到多个 Chunk 写入。
-    /// 写入：将文件偏移-长度映射为若干 Chunk 写。
-    /// - 分片写入每个相关块；写完后一次性更新 size。
-    /// - 返回写入的字节数；当前未保证跨多块的强原子性（后续可引入更细粒度事务）。
+    /// Write data by file offset. Internally splits the range into per-chunk writes.
+    /// Writes each affected chunk fragment. Updates the file size at the end only if the write extends the file.
     pub async fn write(&self, path: &str, offset: u64, data: &[u8]) -> Result<usize, String> {
         let path = Self::norm_path(path);
-        let ino = { self.ns.lock().unwrap().lookup.get(&path).cloned() }
-            .ok_or_else(|| "not found".to_string())?;
-
-        let spans: Vec<ChunkSpan> = split_file_range_into_chunks(self.layout, offset, data.len());
-        let mut cursor = 0usize;
-        for sp in spans {
-            let cid = self.chunk_id_for(ino, sp.chunk_index);
-            let mut guard = self.store.lock().await;
-            let mut w = ChunkWriter::new(self.layout, cid, &mut *guard);
-            let take = sp.len;
-            let buf = &data[cursor..cursor + take];
-            let _slice = w.write(sp.offset_in_chunk, buf).await;
-            cursor += take;
-        }
-        // 一次性更新 size
-        let new_size = offset + data.len() as u64;
-        self.meta
-            .set_file_size(ino, new_size)
+        let (ino, kind) = self
+            .core
+            .meta_layer
+            .lookup_path(&path)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(data.len())
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "not found".to_string())?;
+        if kind != FileType::File {
+            return Err("not a file".into());
+        }
+
+        let inode = self.ensure_inode_registered(ino).await?;
+        let writer = self
+            .state
+            .files
+            .writer(ino)
+            .ok_or_else(|| "file writer is not initialized".to_string())?;
+
+        let guard = writer.write().await;
+        let written = guard.write(offset, data).await.map_err(|e| e.to_string())?;
+
+        let target_size = offset + data.len() as u64;
+        if target_size > inode.file_size() {
+            inode.update_size(target_size);
+            self.core
+                .meta_layer
+                .set_file_size(ino, target_size)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.state.modified.touch(ino).await;
+        Ok(written)
     }
 
-    /// 读文件（按文件偏移）。
+    /// Read data by file offset.
     /// Read by inode directly
     pub async fn read_ino(&self, ino: i64, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         if len == 0 {
             return Ok(Vec::new());
         }
-        let spans: Vec<ChunkSpan> = split_file_range_into_chunks(self.layout, offset, len);
-        let mut out = Vec::with_capacity(len);
-        for sp in spans {
-            let cid = self.chunk_id_for(ino, sp.chunk_index);
-            let guard = self.store.lock().await;
-            let r = ChunkReader::new(self.layout, cid, &*guard);
-            let part = r.read(sp.offset_in_chunk, sp.len).await;
-            drop(guard);
-            out.extend(part);
-        }
-        Ok(out)
+        self.ensure_inode_registered(ino).await?;
+        let reader = self
+            .state
+            .files
+            .reader(ino)
+            .ok_or_else(|| "file reader is not initialized".to_string())?;
+        reader.read(offset, len).await.map_err(|e| e.to_string())
     }
 
     /// Read by path (convenience method that uses read_ino internally)
     pub async fn read(&self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         let path = Self::norm_path(path);
-        let ino = { self.ns.lock().unwrap().lookup.get(&path).cloned() }
+        let (ino, _) = self
+            .core
+            .meta_layer
+            .lookup_path(&path)
+            .await
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| "not found".to_string())?;
         self.read_ino(ino, offset, len).await
+    }
+
+    /// Allocate a per-file handle, returning the opaque fh id.
+    pub async fn open_handle(&self, ino: i64, read: bool, write: bool) -> u64 {
+        self.state
+            .handles
+            .allocate(ino, HandleFlags::new(read, write))
+            .await
+    }
+
+    /// Release a previously allocated file handle.
+    pub async fn close_handle(&self, fh: u64) -> Result<(), String> {
+        self.state
+            .handles
+            .release(fh)
+            .await
+            .map(|_| ())
+            .ok_or_else(|| "invalid handle".into())
+    }
+
+    /// Update cached information about a handle (e.g. last observed offset).
+    pub async fn touch_handle_offset(&self, fh: u64, offset: u64) -> Result<(), String> {
+        self.state
+            .handles
+            .with_handle_mut(fh, |handle| handle.last_offset = offset)
+            .await
+            .map(|_| ())
+            .ok_or_else(|| "invalid handle".into())
+    }
+
+    /// List all open handles for an inode.
+    pub async fn handles_for(&self, ino: i64) -> Vec<u64> {
+        self.state.handles.handles_for(ino).await
+    }
+
+    /// Check whether a file has been modified since a given point in time.
+    pub async fn modified_since(&self, ino: i64, since: Instant) -> bool {
+        self.state.modified.modified_since(ino, since).await
+    }
+
+    /// Drop modification markers older than `ttl` to keep the tracker bounded.
+    pub async fn cleanup_modified(&self, ttl: Duration) {
+        self.state.modified.cleanup_older_than(ttl).await;
+    }
+
+    async fn ensure_inode_registered(&self, ino: i64) -> Result<Arc<Inode>, String> {
+        // fast path to check whether there is an existing inode.
+        if let Some(inode) = self.state.files.inode(ino) {
+            return Ok(inode.clone());
+        }
+
+        // double-check: lock the entry and do the check again.
+        match self.state.files.inode.entry(ino) {
+            Entry::Occupied(entry) => Ok(Arc::clone(entry.get())),
+            Entry::Vacant(entry) => {
+                let attr = self
+                    .core
+                    .meta_layer
+                    .stat(ino)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "not found".to_string())?;
+                if attr.kind != FileType::File {
+                    return Err("not a file".into());
+                }
+
+                let inode = Inode::new(ino, attr.size);
+                self.state
+                    .files
+                    .ensure_init(Arc::clone(&inode), Arc::clone(&self.core.chunk_io));
+                entry.insert(inode.clone());
+                Ok(inode)
+            }
+        }
     }
 }
 
@@ -850,8 +999,14 @@ mod tests {
     use super::*;
     use crate::cadapter::client::ObjectClient;
     use crate::cadapter::localfs::LocalFsBackend;
+    use crate::chuck::store::InMemoryBlockStore;
     use crate::chuck::store::ObjectBlockStore;
-    use crate::meta::create_meta_store_from_url;
+    use crate::meta::factory::create_meta_store_from_url;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::{Barrier, Notify};
+    use tokio::time::{sleep, timeout};
 
     #[tokio::test]
     async fn test_fs_mkdir_create_write_read_readdir() {
@@ -860,8 +1015,9 @@ mod tests {
         let client = ObjectClient::new(LocalFsBackend::new(tmp.path()));
         let store = ObjectBlockStore::new(client);
 
-        let meta = create_meta_store_from_url("sqlite::memory:").await.unwrap();
-        let fs = VFS::new(layout, store, meta).await.unwrap();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
 
         fs.mkdir_p("/a/b").await.expect("mkdir_p");
         fs.create_file("/a/b/hello.txt").await.expect("create");
@@ -898,16 +1054,17 @@ mod tests {
         let client = ObjectClient::new(LocalFsBackend::new(tmp.path()));
         let store = ObjectBlockStore::new(client);
 
-        let meta = create_meta_store_from_url("sqlite::memory:").await.unwrap();
-        let fs = VFS::new(layout, store, meta).await.unwrap();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
 
         fs.mkdir_p("/a/b").await.unwrap();
         fs.create_file("/a/b/t.txt").await.unwrap();
-        assert!(fs.exists("/a/b/t.txt"));
+        assert!(fs.exists("/a/b/t.txt").await);
 
         // rename file
         fs.rename("/a/b/t.txt", "/a/b/u.txt").await.unwrap();
-        assert!(!fs.exists("/a/b/t.txt") && fs.exists("/a/b/u.txt"));
+        assert!(!fs.exists("/a/b/t.txt").await && fs.exists("/a/b/u.txt").await);
 
         // truncate
         fs.truncate("/a/b/u.txt", layout.block_size as u64 * 2)
@@ -918,9 +1075,235 @@ mod tests {
 
         // unlink and rmdir
         fs.unlink("/a/b/u.txt").await.unwrap();
-        assert!(!fs.exists("/a/b/u.txt"));
+        assert!(!fs.exists("/a/b/u.txt").await);
         // dir empty then rmdir
         fs.rmdir("/a/b").await.unwrap();
-        assert!(!fs.exists("/a/b"));
+        assert!(!fs.exists("/a/b").await);
+    }
+
+    /// When different inodes are written concurrently, each file should make progress without
+    /// contending on the registry locks. `BarrierBlockStore` forces the first block write of each
+    /// task to wait at a barrier so we know both writes overlapped before they finish.
+    #[tokio::test]
+    async fn test_fs_parallel_writes_to_distinct_files() {
+        let layout = ChunkLayout::default();
+        let store = BarrierBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+
+        fs.create_file("/alpha").await.unwrap();
+        fs.create_file("/beta").await.unwrap();
+        let payload = vec![7u8; 8];
+
+        let fs_a = fs.clone();
+        let task_a = tokio::spawn({
+            let data = payload.clone();
+            async move {
+                fs_a.write("/alpha", 0, &data).await.expect("write alpha");
+            }
+        });
+        let fs_b = fs.clone();
+        let task_b = tokio::spawn({
+            let data = payload.clone();
+            async move {
+                fs_b.write("/beta", 0, &data).await.expect("write beta");
+            }
+        });
+
+        timeout(Duration::from_secs(2), async {
+            task_a.await.unwrap();
+            task_b.await.unwrap();
+        })
+        .await
+        .expect("writes on different files should not block each other");
+    }
+
+    /// Readers of the same inode must be serialized behind in-flight writers to avoid racing
+    /// with partial chunk updates. `BlockingBlockStore` pauses the first `write_range` until the
+    /// test explicitly releases it; the read should block until then and observe the final data.
+    #[tokio::test]
+    async fn test_fs_same_file_read_waits_for_active_write() {
+        let layout = ChunkLayout::default();
+        let (store, controller) = BlockingBlockStore::new();
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await.unwrap();
+        let meta_store = meta_handle.store();
+        let fs = VFS::new(layout, store, meta_store).await.unwrap();
+        fs.create_file("/shared").await.unwrap();
+        let payload = vec![3u8; 32];
+        let expected = payload.clone();
+        let len = expected.len();
+
+        let writer_fs = fs.clone();
+        let writer_payload = payload;
+        let writer = tokio::spawn(async move {
+            writer_fs
+                .write("/shared", 0, &writer_payload)
+                .await
+                .expect("write shared");
+        });
+
+        controller.wait_for_block().await;
+
+        let read_finished = Arc::new(AtomicBool::new(false));
+        let reader_fs = fs.clone();
+        let read_done = read_finished.clone();
+        let reader = tokio::spawn(async move {
+            let data = reader_fs
+                .read("/shared", 0, len)
+                .await
+                .expect("read shared");
+            read_done.store(true, Ordering::SeqCst);
+            data
+        });
+
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            !read_finished.load(Ordering::SeqCst),
+            "read should wait for in-flight writer"
+        );
+
+        controller.release_block();
+
+        let contents = reader.await.unwrap();
+        assert_eq!(contents, expected, "read should observe written bytes");
+        writer.await.unwrap();
+    }
+
+    /// BlockStore wrapper that synchronizes the first two writes so we can prove inter-file
+    /// operations progress concurrently.
+    #[derive(Clone)]
+    struct BarrierBlockStore {
+        inner: Arc<InMemoryBlockStore>,
+        gate: Arc<Barrier>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl BarrierBlockStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryBlockStore::new()),
+                gate: Arc::new(Barrier::new(2)),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl BlockStore for BarrierBlockStore {
+        async fn write_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            offset: u32,
+            data: &[u8],
+        ) -> anyhow::Result<u64> {
+            let idx = self.calls.fetch_add(1, Ordering::SeqCst);
+            if idx < 2 {
+                self.gate.wait().await;
+            }
+            self.inner.write_range(key, offset, data).await
+        }
+
+        async fn read_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            offset: u32,
+            buf: &mut [u8],
+        ) -> anyhow::Result<()> {
+            self.inner.read_range(key, offset, buf).await
+        }
+
+        async fn delete_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            len: usize,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_range(key, len).await
+        }
+    }
+
+    /// BlockStore wrapper that pauses the first write until the test releases it, letting us
+    /// simulate a long-running writer on a single inode.
+    #[derive(Clone)]
+    struct BlockingBlockStore {
+        inner: Arc<InMemoryBlockStore>,
+        state: Arc<BlockingState>,
+    }
+
+    impl BlockingBlockStore {
+        fn new() -> (Self, BlockingController) {
+            let state = Arc::new(BlockingState::new());
+            (
+                Self {
+                    inner: Arc::new(InMemoryBlockStore::new()),
+                    state: state.clone(),
+                },
+                BlockingController { state },
+            )
+        }
+    }
+
+    struct BlockingState {
+        paused: AtomicBool,
+        started: Notify,
+        release: Notify,
+    }
+
+    impl BlockingState {
+        fn new() -> Self {
+            Self {
+                paused: AtomicBool::new(true),
+                started: Notify::new(),
+                release: Notify::new(),
+            }
+        }
+    }
+
+    /// Small handle that lets tests await the point where the writer is blocked and then release it.
+    struct BlockingController {
+        state: Arc<BlockingState>,
+    }
+
+    impl BlockingController {
+        async fn wait_for_block(&self) {
+            self.state.started.notified().await;
+        }
+
+        fn release_block(&self) {
+            self.state.release.notify_waiters();
+        }
+    }
+
+    #[async_trait]
+    impl BlockStore for BlockingBlockStore {
+        async fn write_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            offset: u32,
+            data: &[u8],
+        ) -> anyhow::Result<u64> {
+            if self.state.paused.swap(false, Ordering::SeqCst) {
+                self.state.started.notify_waiters();
+                self.state.release.notified().await;
+            }
+            self.inner.write_range(key, offset, data).await
+        }
+
+        async fn read_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            offset: u32,
+            buf: &mut [u8],
+        ) -> anyhow::Result<()> {
+            self.inner.read_range(key, offset, buf).await
+        }
+
+        async fn delete_range(
+            &self,
+            key: crate::chuck::store::BlockKey,
+            len: usize,
+        ) -> anyhow::Result<()> {
+            self.inner.delete_range(key, len).await
+        }
     }
 }

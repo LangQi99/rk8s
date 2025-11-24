@@ -7,6 +7,8 @@ use anyhow::{Result, anyhow};
 use liboci_cli::{Delete, Start, State};
 use tracing::{error, info};
 
+use crate::daemon::probe::collect_container_statuses;
+
 pub fn delete_pod(pod_name: &str) -> Result<(), anyhow::Error> {
     let root_path = rootpath::determine(None)?;
     let pod_info = PodInfo::load(&root_path, pod_name)?;
@@ -139,9 +141,9 @@ pub fn state_pod(pod_name: &str) -> Result<(), anyhow::Error> {
     let root_path = rootpath::determine(None)?;
     let pod_info = PodInfo::load(&root_path, pod_name)?;
 
-    println!("Pod: {pod_name}");
+    info!("Pod: {pod_name}");
 
-    println!("PodSandbox ID: {}", pod_info.pod_sandbox_id);
+    info!("PodSandbox ID: {}", pod_info.pod_sandbox_id);
     let _ = state(
         State {
             container_id: pod_info.pod_sandbox_id.clone(),
@@ -149,7 +151,7 @@ pub fn state_pod(pod_name: &str) -> Result<(), anyhow::Error> {
         root_path.clone(),
     );
 
-    println!("Containers:");
+    info!("Containers:");
     for container_name in &pod_info.container_names {
         let _container_state = state(
             State {
@@ -157,6 +159,41 @@ pub fn state_pod(pod_name: &str) -> Result<(), anyhow::Error> {
             },
             root_path.clone(),
         );
+    }
+
+    let probe_statuses = collect_container_statuses(pod_name);
+    if !probe_statuses.is_empty() {
+        println!("Probe status:");
+        for status in probe_statuses {
+            println!("  container: {}", status.name);
+            if let Some(probe) = status.readiness_probe {
+                println!(
+                    "    readiness: {:?} (successes: {}, failures: {}, last_error: {})",
+                    probe.state,
+                    probe.consecutive_successes,
+                    probe.consecutive_failures,
+                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
+                );
+            }
+            if let Some(probe) = status.liveness_probe {
+                println!(
+                    "    liveness: {:?} (successes: {}, failures: {}, last_error: {})",
+                    probe.state,
+                    probe.consecutive_successes,
+                    probe.consecutive_failures,
+                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
+                );
+            }
+            if let Some(probe) = status.startup_probe {
+                println!(
+                    "    startup: {:?} (successes: {}, failures: {}, last_error: {})",
+                    probe.state,
+                    probe.consecutive_successes,
+                    probe.consecutive_failures,
+                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
+                );
+            }
+        }
     }
 
     Ok(())

@@ -12,8 +12,18 @@ use etcd_client::{Client, DeleteOptions};
 use libscheduler::plugins::Plugins;
 use libscheduler::plugins::node_resources_fit::ScoringStrategy;
 use libscheduler::with_xline::run_scheduler_with_xline;
+use libvault::storage::xline::XlineOptions;
 
 const ETCD_ENDPOINTS: &[&str] = &["127.0.0.1:2379"];
+
+fn xline_options() -> XlineOptions {
+    XlineOptions::new(
+        ETCD_ENDPOINTS
+            .iter()
+            .map(|endpoint| endpoint.to_string())
+            .collect(),
+    )
+}
 
 struct EtcdTestClient {
     client: Client,
@@ -79,6 +89,7 @@ fn create_test_node(name: &str, cpu: &str, memory: &str) -> Node {
             namespace: "".to_string(),
             labels: HashMap::new(),
             annotations: HashMap::new(),
+            ..Default::default()
         },
         spec: XlineNodeSpec {
             pod_cidr: "10.244.0.0/24".to_string(),
@@ -126,6 +137,7 @@ fn create_test_pod(name: &str, cpu_limit: Option<&str>, memory_limit: Option<&st
             namespace: "default".to_string(),
             labels: HashMap::new(),
             annotations: HashMap::new(),
+            ..Default::default()
         },
         spec: XlinePodSpec {
             node_name: None,
@@ -135,11 +147,17 @@ fn create_test_pod(name: &str, cpu_limit: Option<&str>, memory_limit: Option<&st
                 ports: vec![],
                 args: vec![],
                 resources,
+                liveness_probe: None,
+                readiness_probe: None,
+                startup_probe: None,
             }],
             init_containers: vec![],
             tolerations: vec![],
         },
-        status: PodStatus { pod_ip: None },
+        status: PodStatus {
+            pod_ip: None,
+            container_statuses: vec![],
+        },
     }
 }
 
@@ -162,7 +180,7 @@ async fn test_scheduler_with_xline_basic_scheduling() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -199,7 +217,7 @@ async fn test_scheduler_with_xline_node_watch() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -251,7 +269,7 @@ async fn test_scheduler_with_xline_pod_watch() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -316,7 +334,7 @@ async fn test_scheduler_with_xline_multiple_pods_and_nodes() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -366,7 +384,7 @@ async fn test_scheduler_with_xline_node_deletion() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -425,7 +443,7 @@ async fn test_scheduler_with_xline_pod_deletion() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -499,7 +517,7 @@ async fn test_scheduler_with_xline_existing_assignment() {
 
     let (_unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,
@@ -548,7 +566,7 @@ async fn test_scheduler_with_xline_pod_reassume() {
 
     let (unassume_tx, unassume_rx) = mpsc::unbounded_channel();
     let mut rx = run_scheduler_with_xline(
-        ETCD_ENDPOINTS,
+        xline_options(),
         ScoringStrategy::LeastAllocated,
         Plugins::default(),
         unassume_rx,

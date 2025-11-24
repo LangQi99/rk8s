@@ -169,8 +169,9 @@ cargo build -p rks
 2. **Set up networking:**
 ```bash
 cargo build -p libbridge
-sudo mkdir -p /opt/cni/bin
-sudo mv target/debug/libbridge /opt/cni/bin/
+cargo build -p libipam
+sudo install -Dm755 target/debug/libbridge /opt/cni/bin/libbridge
+sudo install -Dm755 target/debug/libipam /opt/cni/bin/libipam
 ```
 
 3. **Prepare container images:**
@@ -218,7 +219,7 @@ sudo RKL_ADDRESS=127.0.0.1:50051 project/target/debug/rkl pod daemon # Monitors 
 ```
 
 **RKS:**
-For detail about building a cluster with RKS and RKL, please refer to [RKS–RKL usage](./project/rks/readme.md).
+For detail about building a cluster with RKS and RKL, please refer to [RKS–RKL usage](./project/rks/Readme.md).
 
 ## Key Features
 - **CRI Compliance** - Full Container Runtime Interface implementation

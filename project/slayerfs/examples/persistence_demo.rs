@@ -4,9 +4,15 @@ use slayerfs::cadapter::localfs::LocalFsBackend;
 use slayerfs::chuck::chunk::ChunkLayout;
 use slayerfs::chuck::store::ObjectBlockStore;
 use slayerfs::fuse::mount::mount_vfs_unprivileged;
+use slayerfs::meta::MetaStore;
+use slayerfs::meta::config::DatabaseType;
+use slayerfs::meta::factory::MetaStoreFactory;
+use slayerfs::meta::stores::{DatabaseMetaStore, RedisMetaStore};
 use slayerfs::vfs::fs::VFS;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::signal;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -57,6 +63,10 @@ fn process_config_for_backend(
                     println!("Using etcd distributed backend");
                     Ok(config_content.to_string())
                 }
+                "redis" => {
+                    println!("Using Redis metadata backend");
+                    Ok(config_content.to_string())
+                }
                 _ => Err(format!("Unsupported database type: {}", db_type).into()),
             }
         } else {
@@ -69,8 +79,14 @@ fn process_config_for_backend(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let format = tracing_subscriber::fmt::format().with_ansi(false);
-    tracing_subscriber::fmt().event_format(format).init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new("info"))
+        .unwrap();
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_ansi(true))
+        .with(filter)
+        .init();
 
     #[cfg(not(target_os = "linux"))]
     {
@@ -127,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let layout = ChunkLayout::default();
         let client = ObjectClient::new(LocalFsBackend::new(&backend_storage));
-        let store = ObjectBlockStore::new(client);
+        let store = ObjectBlockStore::new(client.clone());
 
         let config_content = std::fs::read_to_string(&config_file)
             .map_err(|e| format!("Cannot read config file: {}", e))?;
@@ -141,11 +157,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let config = slayerfs::meta::config::Config::from_file(&target_config_path)
             .map_err(|e| format!("Failed to load config file: {}", e))?;
-        let meta = slayerfs::meta::factory::MetaStoreFactory::create_from_config(config)
-            .await
-            .map_err(|e| format!("Failed to initialize metadata storage: {}", e))?;
+        let meta_store: Arc<dyn MetaStore> = match &config.database.db_config {
+            DatabaseType::Redis { .. } => {
+                MetaStoreFactory::<RedisMetaStore>::create_from_config(config.clone())
+                    .await
+                    .map_err(|e| format!("Failed to initialize metadata storage: {}", e))?
+                    .store()
+            }
+            _ => MetaStoreFactory::<DatabaseMetaStore>::create_from_config(config.clone())
+                .await
+                .map_err(|e| format!("Failed to initialize metadata storage: {}", e))?
+                .store(),
+        };
 
-        let fs = VFS::new(layout, store, meta).await.expect("create VFS");
+        let fs = VFS::new(layout, store, meta_store.clone())
+            .await
+            .expect("create VFS");
+
+        println!("Starting garbage collector...");
+
+        let gc_handle = tokio::spawn({
+            let meta_store = meta_store.clone();
+            let object_client = client.clone();
+            async move {
+                use slayerfs::daemon::worker::start_gc;
+                use std::sync::Arc;
+
+                start_gc(meta_store, Arc::new(object_client), None).await;
+            }
+        });
 
         println!("Mounting filesystem...");
 
@@ -180,11 +220,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Press Ctrl+C to exit and unmount filesystem...");
 
-        signal::ctrl_c().await?;
-        println!("\nUnmounting filesystem...");
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                println!("\nUnmounting filesystem...");
 
-        handle.unmount().await?;
-        println!("Filesystem unmounted");
+                handle.unmount().await?;
+                println!("Filesystem unmounted");
+                gc_handle.abort();
+                let _ = gc_handle.await;
+            }
+        }
+
         Ok(())
     }
 }

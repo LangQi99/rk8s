@@ -1,25 +1,32 @@
-//! SDK 接口：提供面向应用/SDK 的简化文件系统 API（参考 JuiceFS 风格）。
+//! SDK interface: simplified filesystem APIs for applications/SDKs (JuiceFS-style).
 //!
-//! 设计目标：
-//! - 路径级接口：mkdir_p/create/read/write/readdir/stat
-//! - 可插拔后端：复用 Fs 上的 BlockStore + MetaStore
-//! - 提供 LocalFs 的便捷构造
+//! Goals:
+//! - Path-level APIs: mkdir_p/create/read/write/readdir/stat
+//! - Pluggable backend: reuse Fs-level BlockStore and MetaStore
+//! - Provide a convenient LocalFs constructor
 
 use crate::chuck::chunk::ChunkLayout;
 use crate::chuck::store::BlockStore;
-use crate::meta::{MetaStore, create_meta_store_from_url};
+use crate::meta::MetaStore;
+use crate::meta::factory::create_meta_store_from_url;
+use crate::meta::store::MetaError;
 use crate::vfs::fs::{DirEntry, FileAttr, VFS};
+use std::path::Path;
 
-/// SDK 客户端（泛型后端）。
-pub struct Client<S: BlockStore, M: MetaStore> {
+/// SDK client parametrized by its backend.
+pub struct Client<S: BlockStore, M: MetaStore + 'static> {
     fs: VFS<S, M>,
 }
 
 #[allow(unused)]
-impl<S: BlockStore, M: MetaStore> Client<S, M> {
+impl<S: BlockStore, M: MetaStore + 'static> Client<S, M> {
     pub async fn new(layout: ChunkLayout, store: S, meta: M) -> Result<Self, String> {
         let fs = VFS::new(layout, store, meta).await?;
         Ok(Self { fs })
+    }
+
+    pub fn from_vfs(fs: VFS<S, M>) -> Self {
+        Self { fs }
     }
 
     pub async fn mkdir_p(&self, path: &str) -> Result<(), String> {
@@ -56,7 +63,20 @@ impl<S: BlockStore, M: MetaStore> Client<S, M> {
         self.fs.stat(path).await.ok_or_else(|| "not found".into())
     }
 
-    // ---- 新增：删除/重命名/截断 ----
+    pub async fn link(&self, existing: &str, link_path: &str) -> Result<FileAttr, String> {
+        self.fs.link(existing, link_path).await
+    }
+
+    pub async fn symlink(&self, link_path: &str, target: &str) -> Result<FileAttr, String> {
+        let (_, attr) = self.fs.create_symlink(link_path, target).await?;
+        Ok(attr)
+    }
+
+    pub async fn readlink(&self, path: &str) -> Result<String, String> {
+        self.fs.readlink(path).await
+    }
+
+    // Extra helpers: delete / rename / truncate
     pub async fn unlink(&self, path: &str) -> Result<(), String> {
         self.fs.unlink(path).await
     }
@@ -74,12 +94,11 @@ impl<S: BlockStore, M: MetaStore> Client<S, M> {
     }
 }
 
-// ============== 便捷构造（LocalFs 后端） ==============
+// ============== Convenience builder (LocalFs backend) ==============
 
 use crate::cadapter::client::ObjectClient;
 use crate::cadapter::localfs::LocalFsBackend;
 use crate::chuck::store::ObjectBlockStore;
-use std::path::Path;
 use std::sync::Arc;
 
 #[allow(dead_code)]
@@ -88,31 +107,34 @@ pub type LocalClient = Client<ObjectBlockStore<LocalFsBackend>, Arc<dyn MetaStor
 #[allow(dead_code)]
 impl LocalClient {
     #[allow(dead_code)]
-    pub async fn new_local<P: AsRef<Path>>(root: P, layout: ChunkLayout) -> Self {
+    pub async fn new_local<P: AsRef<Path>>(
+        root: P,
+        layout: ChunkLayout,
+    ) -> Result<Self, MetaError> {
         let client = ObjectClient::new(LocalFsBackend::new(root));
+        let meta_handle = create_meta_store_from_url("sqlite::memory:").await?;
+        let metadata: Arc<dyn MetaStore> = meta_handle.store();
         let store = ObjectBlockStore::new(client);
-
-        let meta = create_meta_store_from_url("sqlite::memory:")
+        let fs = VFS::new(layout, store, metadata)
             .await
-            .expect("Failed to create meta store");
-
-        let fs = VFS::new(layout, store, meta)
-            .await
-            .expect("Failed to create VFS");
-        Client { fs }
+            .map_err(MetaError::Internal)?;
+        Ok(Client { fs })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::fs::FileType;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_sdk_local_basic() {
         let layout = ChunkLayout::default();
         let tmp = tempdir().unwrap();
-        let mut cli = LocalClient::new_local(tmp.path(), layout).await;
+        let mut cli = LocalClient::new_local(tmp.path(), layout)
+            .await
+            .expect("init LocalClient");
 
         cli.mkdir_p("/a/b").await.unwrap();
         cli.create("/a/b/hello.txt").await.unwrap();
@@ -144,7 +166,9 @@ mod tests {
     async fn test_sdk_local_ops_extras() {
         let layout = ChunkLayout::default();
         let tmp = tempdir().unwrap();
-        let cli = LocalClient::new_local(tmp.path(), layout).await;
+        let cli = LocalClient::new_local(tmp.path(), layout)
+            .await
+            .expect("init LocalClient");
 
         cli.mkdir_p("/x/y").await.unwrap();
         cli.create("/x/y/a.txt").await.unwrap();
@@ -155,7 +179,77 @@ mod tests {
         let st = cli.stat("/x/y/b.txt").await.unwrap();
         assert!(st.size >= (layout.block_size * 2) as u64);
         cli.unlink("/x/y/b.txt").await.unwrap();
-        // 目录空了，允许删除
+        // Directory is empty, so removal is allowed
         cli.rmdir("/x/y").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_sdk_local_links() {
+        let layout = ChunkLayout::default();
+        let tmp = tempdir().unwrap();
+        let mut cli = LocalClient::new_local(tmp.path(), layout)
+            .await
+            .expect("init LocalClient");
+
+        cli.mkdir_p("/links").await.unwrap();
+        cli.create("/links/original.txt").await.unwrap();
+        cli.write_at("/links/original.txt", 0, b"payload")
+            .await
+            .unwrap();
+
+        let orig_attr = cli.stat("/links/original.txt").await.unwrap();
+        let link_res = cli.link("/links/original.txt", "/links/hard.txt").await;
+        let mut hard_created = false;
+        let mut hard_path = "/links/hard.txt".to_string();
+        if let Ok(hard_attr) = &link_res {
+            assert_eq!(hard_attr.ino, orig_attr.ino);
+            assert!(hard_attr.nlink >= 2);
+            hard_created = true;
+
+            cli.mkdir_p("/links/sub").await.unwrap();
+            cli.rename("/links/hard.txt", "/links/sub/hard-renamed.txt")
+                .await
+                .unwrap();
+            hard_path = "/links/sub/hard-renamed.txt".to_string();
+
+            let renamed_attr = cli.stat(&hard_path).await.unwrap();
+            assert_eq!(renamed_attr.ino, orig_attr.ino);
+            assert!(renamed_attr.nlink >= 2);
+
+            let legacy = cli.stat("/links/hard.txt").await;
+            assert!(legacy.is_err());
+        } else if let Err(err) = &link_res {
+            assert!(
+                err.contains("not supported")
+                    || err.contains("UNIQUE constraint failed")
+                    || err.contains("Database error"),
+                "unexpected hard-link error: {err}"
+            );
+        }
+
+        let sym_attr = cli
+            .symlink("/links/original.symlink", "/links/original.txt")
+            .await
+            .unwrap();
+        assert_eq!(sym_attr.kind, FileType::Symlink);
+        let target = cli.readlink("/links/original.symlink").await.unwrap();
+        assert_eq!(target, "/links/original.txt");
+
+        cli.unlink("/links/original.symlink").await.unwrap();
+        if hard_created {
+            cli.unlink("/links/original.txt").await.unwrap();
+            let remaining_attr = cli.stat(&hard_path).await.unwrap();
+            assert_eq!(remaining_attr.ino, orig_attr.ino);
+            assert_eq!(remaining_attr.nlink, 1);
+
+            let remaining_data = cli.read_at(&hard_path, 0, 7).await.unwrap();
+            assert_eq!(remaining_data, b"payload".to_vec());
+
+            cli.unlink(&hard_path).await.unwrap();
+            cli.rmdir("/links/sub").await.unwrap();
+        } else {
+            cli.unlink("/links/original.txt").await.unwrap();
+        }
+        cli.rmdir("/links").await.unwrap();
     }
 }

@@ -34,6 +34,7 @@ where
             ]),
             namespace: String::new(),
             annotations: std::collections::HashMap::new(),
+            ..Default::default()
         },
         spec: PodSpec {
             node_name: None,
@@ -48,11 +49,17 @@ where
                     host_port: 0,
                 }],
                 resources: None,
+                liveness_probe: None,
+                readiness_probe: None,
+                startup_probe: None,
             }],
             init_containers: vec![],
             tolerations: vec![],
         },
-        status: PodStatus { pod_ip: None },
+        status: PodStatus {
+            pod_ip: None,
+            container_statuses: vec![],
+        },
     }
 }
 

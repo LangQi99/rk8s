@@ -80,7 +80,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         // changes the kernel offset while we are using it.
         let (_guard, dir) = data.get_file_mut().await;
 
-        // alloc buff ,pay attention to alian.
+        // Allocate buffer; pay attention to alignment.
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         // Safe because this doesn't modify any memory and we check the return value.
@@ -183,7 +183,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         // changes the kernel offset while we are using it.
         let (_guard, dir) = data.get_file_mut().await;
 
-        // alloc buff ,pay attention to alian.
+        // Allocate buffer; pay attention to alignment.
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         // Safe because this doesn't modify any memory and we check the return value.
@@ -326,9 +326,10 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
         // kernel sends 0 as handle in case of no_open, and it depends on fuse server to handle
         // this case correctly.
-        let st = if !self.no_open.load(Ordering::Relaxed) && handle.is_some() {
-            // Safe as we just checked handle
-            let hd = self.handle_map.get(handle.unwrap(), inode).await?;
+        let st = if !self.no_open.load(Ordering::Relaxed)
+            && let Some(handle_id) = handle
+        {
+            let hd = self.handle_map.get(handle_id, inode).await?;
             // trace!("FS {} passthrough: do_getattr: before stat_fd", self.uuid);
             stat_fd(hd.get_file(), None)
         } else {
@@ -494,6 +495,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                         uid.unwrap_or(self.cfg.mapping.get_uid(req.uid)),
                         gid.unwrap_or(self.cfg.mapping.get_gid(req.gid)),
                     )?;
+                    // Maybe buggy because `open_file` may call `open_by_handle_at`, which requires CAP_DAC_READ_SEARCH.
                     data.open_file(final_flags, &self.proc_self_fd)?
                 }
             }
@@ -563,6 +565,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         self.validate_path_component(name)?;
 
         let data = self.inode_map.get(parent).await?;
+        let file = data.get_file()?;
 
         let res = {
             let _guard = set_creds(
@@ -570,7 +573,6 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 gid.unwrap_or(self.cfg.mapping.get_gid(req.gid)),
             )?;
 
-            let file = data.get_file()?;
             // Safe because this doesn't modify any memory and we check the return value.
             unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), mode & !umask) }
         };
@@ -620,6 +622,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         self.validate_path_component(name)?;
 
         let data = self.inode_map.get(parent).await?;
+        let file = data.get_file()?;
 
         let res = {
             let _guard = set_creds(
@@ -627,7 +630,6 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 gid.unwrap_or(self.cfg.mapping.get_gid(req.gid)),
             )?;
 
-            let file = data.get_file()?;
             // Safe because this doesn't modify any memory and we check the return value.
             unsafe { libc::symlinkat(link.as_ptr(), file.as_raw_fd(), name.as_ptr()) }
         };
@@ -831,7 +833,57 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        if set_attr.atime.is_some() && set_attr.mtime.is_some() {
+        if set_attr.atime.is_some() || set_attr.mtime.is_some() {
+            // POSIX utime() permission rules:
+            // - utime(NULL): requires owner OR write permission
+            // - utime(&times): requires owner only
+            //
+            // At FUSE level, we cannot reliably distinguish these cases because VFS
+            // converts both to actual timestamps. We use a heuristic:
+            // - If both nsec == 0 and timestamp is in the past: likely utime(&times)
+            // - Otherwise: likely utime(NULL) which gets current time with nsec precision
+
+            // SAFETY: libc::time with null pointer is a read-only syscall that always
+            // succeeds and doesn't modify memory.
+            let now = unsafe { libc::time(std::ptr::null_mut()) };
+
+            // Heuristic: utime(&times) typically sets whole seconds (both nsec=0) to past times.
+            // utime(NULL) sets current time which usually has non-zero nsec.
+            // Both timestamps and both conditions must be satisfied to avoid false positives.
+            let is_utime_times =
+                if let (Some(atime_ts), Some(mtime_ts)) = (set_attr.atime, set_attr.mtime) {
+                    (atime_ts.nsec == 0 && mtime_ts.nsec == 0)
+                        && (atime_ts.sec < now && mtime_ts.sec < now)
+                } else {
+                    // If one is None, it's likely a specific update, treat as requiring ownership.
+                    true
+                };
+
+            let st = stat_fd(&file, None)?;
+            let uid = self.cfg.mapping.get_uid(req.uid);
+            let gid = self.cfg.mapping.get_gid(req.gid);
+
+            let is_owner = st.st_uid == uid;
+
+            if !is_owner {
+                if is_utime_times {
+                    // utime(&times): only owner allowed
+                    return Err(io::Error::from_raw_os_error(libc::EPERM).into());
+                } else {
+                    // utime(NULL): check for write permission
+                    // Check user, group, and other permissions
+                    // NOTE: This currently only checks the primary gid. A complete POSIX-compliant
+                    // implementation should check all supplementary groups from req.groups if available.
+                    // However, rfuse3::Request currently doesn't expose supplementary group information.
+                    let has_user_write = st.st_uid == uid && st.st_mode & 0o200 != 0;
+                    let has_group_write = st.st_gid == gid && st.st_mode & 0o020 != 0;
+                    let has_other_write = st.st_mode & 0o002 != 0;
+
+                    if !has_user_write && !has_group_write && !has_other_write {
+                        return Err(io::Error::from_raw_os_error(libc::EPERM).into());
+                    }
+                }
+            }
             let mut tvs: [libc::timespec; 2] = [
                 libc::timespec {
                     tv_sec: 0,
@@ -842,8 +894,14 @@ impl Filesystem for PassthroughFs {
                     tv_nsec: libc::UTIME_OMIT,
                 },
             ];
-            tvs[0].tv_sec = set_attr.atime.unwrap().sec;
-            tvs[1].tv_sec = set_attr.mtime.unwrap().sec;
+            if let Some(atime_ts) = set_attr.atime {
+                tvs[0].tv_sec = atime_ts.sec;
+                tvs[0].tv_nsec = atime_ts.nsec as i64;
+            }
+            if let Some(mtime_ts) = set_attr.mtime {
+                tvs[1].tv_sec = mtime_ts.sec;
+                tvs[1].tv_nsec = mtime_ts.nsec as i64;
+            }
 
             // Safe because this doesn't modify any memory and we check the return value.
             let res = match data {
@@ -859,7 +917,16 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        self.getattr(req, inode, fh, 0).await
+        // After any successful modification, re-stat the file to get fresh attributes.
+        // Use `do_getattr` which correctly handles ID mapping.
+        let (new_stat, _attr_timeout) = self.do_getattr(inode, fh).await?;
+        // Crucially, return a ReplyAttr with a zero TTL.
+        // This tells the kernel to invalidate its attribute cache for this inode immediately.
+        // Subsequent `stat()` calls from clients will trigger a fresh `getattr` request.
+        Ok(ReplyAttr {
+            ttl: Duration::new(0, 0),
+            attr: convert_stat64_to_file_attr(new_stat),
+        })
     }
 
     /// read symbolic link.
@@ -1108,22 +1175,60 @@ impl Filesystem for PassthroughFs {
                 }
             }
             None => {
-                let ret = unsafe {
-                    pread(
-                        raw_fd as c_int,
-                        buf.as_mut_ptr() as *mut libc::c_void,
-                        size as size_t,
-                        offset as off_t,
-                    )
-                };
-                if ret >= 0 {
-                    let bytes_read = ret as usize;
-                    if bytes_read < size as usize {
-                        buf.truncate(bytes_read); // Adjust the buffer size
+                if offset > i64::MAX as u64 {
+                    error!("read error: offset too large: {}", offset);
+                    return Err(Errno::from(libc::EOVERFLOW));
+                }
+                const ALIGN: usize = 4096;
+                let open_flags = data.get_flags().await;
+                let ret = if (open_flags as i32 & libc::O_DIRECT) != 0 {
+                    let mut aligned_buf = unsafe {
+                        let layout = std::alloc::Layout::from_size_align(size as _, ALIGN).unwrap();
+                        let ptr = std::alloc::alloc(layout);
+                        if ptr.is_null() {
+                            return Err(io::Error::from_raw_os_error(libc::ENOMEM).into());
+                        }
+                        Vec::from_raw_parts(ptr, size as _, size as _)
+                    };
+                    let ret = unsafe {
+                        pread(
+                            raw_fd as c_int,
+                            aligned_buf.as_mut_ptr() as *mut libc::c_void,
+                            size as size_t,
+                            offset as off_t,
+                        )
+                    };
+
+                    if ret >= 0 {
+                        let bytes_read = ret as usize;
+                        buf.as_mut_slice()[..bytes_read]
+                            .copy_from_slice(&aligned_buf[..bytes_read]);
                     }
+                    ret
                 } else {
-                    error!("read error: {ret}");
-                    return Err(Errno::from(ret as i32));
+                    unsafe {
+                        pread(
+                            raw_fd as c_int,
+                            buf.as_mut_ptr() as *mut libc::c_void,
+                            size as size_t,
+                            offset as off_t,
+                        )
+                    }
+                };
+                if ret < 0 {
+                    let e = io::Error::last_os_error();
+                    error!("read error: {e:?}");
+                    error!(
+                        "pread raw_fd={}, pointer={:p}, size={}, offset={}",
+                        raw_fd,
+                        buf.as_mut_ptr(),
+                        size,
+                        offset
+                    );
+                    return Err(e.into());
+                } else {
+                    let bytes_read = ret as usize;
+                    buf.truncate(bytes_read);
                 }
             }
         }
@@ -1153,10 +1258,8 @@ impl Filesystem for PassthroughFs {
     ) -> Result<ReplyWrite> {
         let handle_data = self.get_data(fh, inode, libc::O_RDWR).await?;
         let file = &handle_data.file;
-        let raw_fd = {
-            let _guard = handle_data.lock.lock().await;
-            handle_data.borrow_fd().as_raw_fd()
-        };
+        let _guard = handle_data.lock.lock().await;
+        let raw_fd = handle_data.borrow_fd().as_raw_fd();
 
         let res = if self.cfg.use_mmap {
             self.write_to_mmap(inode, offset, data, file).await.ok()
@@ -1168,7 +1271,10 @@ impl Filesystem for PassthroughFs {
             Some(ret) => ret as isize,
             None => {
                 let size = data.len();
-
+                if offset > i64::MAX as u64 {
+                    error!("write error: offset too large: {}", offset);
+                    return Err(Errno::from(libc::EOVERFLOW));
+                }
                 self.check_fd_flags(&handle_data, raw_fd, flags).await?;
                 let ret = unsafe {
                     libc::pwrite(
@@ -1181,8 +1287,16 @@ impl Filesystem for PassthroughFs {
                 if ret >= 0 {
                     ret
                 } else {
-                    error!("write error: {ret}");
-                    return Err(Errno::from(ret as i32));
+                    let e = io::Error::last_os_error();
+                    error!("write error: {e:?}");
+                    error!(
+                        "pwrite raw_fd={}, pointer={:p}, size={}, offset={}",
+                        raw_fd,
+                        data.as_ptr(),
+                        size,
+                        offset
+                    );
+                    return Err(Errno::from(e.raw_os_error().unwrap_or(-1)));
                 }
             }
         };
@@ -1338,7 +1452,9 @@ impl Filesystem for PassthroughFs {
             )
         };
         if res < 0 {
-            return Err(io::Error::last_os_error().into());
+            let e = io::Error::last_os_error();
+            // error!("getxattr error: {e:?}");
+            return Err(e.into());
         }
 
         if size == 0 {
@@ -1376,7 +1492,9 @@ impl Filesystem for PassthroughFs {
             )
         };
         if res < 0 {
-            return Err(io::Error::last_os_error().into());
+            let e = io::Error::last_os_error();
+            // error!("listxattr error: {e:?}");
+            return Err(e.into());
         }
 
         if size == 0 {
@@ -1822,21 +1940,156 @@ impl Filesystem for PassthroughFs {
         // Let the Arc<HandleData> in scope, otherwise fd may get invalid.
         let data = self.handle_map.get(fh, inode).await?;
 
-        // Acquire the lock to get exclusive access, otherwise it may break do_readdir().
-        let (_guard, file) = data.get_file_mut().await;
+        // Check file type to determine appropriate lseek handling
+        let st = stat_fd(data.get_file(), None)?;
+        let is_dir = (st.st_mode & libc::S_IFMT) == libc::S_IFDIR;
 
-        // Safe because this doesn't modify any memory and we check the return value.
+        if is_dir {
+            // Directory special handling: support SEEK_SET and SEEK_CUR with bounds checks.
+            // Acquire the lock to get exclusive access
+            let (_guard, file) = data.get_file_mut().await;
+
+            // Handle directory lseek operations according to POSIX standard
+            // This enables seekdir/telldir functionality on directories
+            match whence {
+                // SEEK_SET: set directory offset to an absolute value
+                x if x == libc::SEEK_SET as u32 => {
+                    // Validate offset bounds to prevent overflow
+                    // Directory offsets should not exceed i64::MAX
+                    if offset > i64::MAX as u64 {
+                        return Err(io::Error::from_raw_os_error(libc::EINVAL).into());
+                    }
+
+                    // Perform the seek operation using libc::lseek64
+                    // This directly manipulates the file descriptor's position
+                    let res = unsafe {
+                        libc::lseek64(file.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET)
+                    };
+                    if res < 0 {
+                        return Err(io::Error::last_os_error().into());
+                    }
+                    Ok(ReplyLSeek { offset: res as u64 })
+                }
+                // SEEK_CUR: move relative to current directory offset
+                x if x == libc::SEEK_CUR as u32 => {
+                    // Get current position using libc::lseek64 with offset 0
+                    let cur = unsafe { libc::lseek64(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+                    if cur < 0 {
+                        return Err(io::Error::last_os_error().into());
+                    }
+                    let current = cur as u64;
+
+                    // Compute new offset safely to prevent arithmetic overflow
+                    if let Some(new_offset) = current.checked_add(offset) {
+                        // Ensure the new offset is within valid bounds
+                        if new_offset > i64::MAX as u64 {
+                            return Err(io::Error::from_raw_os_error(libc::EINVAL).into());
+                        }
+                        // Set the new offset using libc::lseek64
+                        let res = unsafe {
+                            libc::lseek64(
+                                file.as_raw_fd(),
+                                new_offset as libc::off64_t,
+                                libc::SEEK_SET,
+                            )
+                        };
+                        if res < 0 {
+                            return Err(io::Error::last_os_error().into());
+                        }
+                        Ok(ReplyLSeek { offset: new_offset })
+                    } else {
+                        Err(io::Error::from_raw_os_error(libc::EINVAL).into())
+                    }
+                }
+                // Other whence values are invalid for directories (e.g., SEEK_END)
+                _ => Err(io::Error::from_raw_os_error(libc::EINVAL).into()),
+            }
+        } else {
+            // File seek handling for non-directory files
+            // Acquire the lock to get exclusive access, otherwise it may break do_readdir().
+            let (_guard, file) = data.get_file_mut().await;
+
+            // Safe because this doesn't modify any memory and we check the return value.
+            // Use 64-bit seek for regular files to match kernel offsets
+            let res = unsafe {
+                libc::lseek64(
+                    file.as_raw_fd(),
+                    offset as libc::off64_t,
+                    whence as libc::c_int,
+                )
+            };
+            if res < 0 {
+                Err(io::Error::last_os_error().into())
+            } else {
+                Ok(ReplyLSeek { offset: res as u64 })
+            }
+        }
+    }
+
+    /// Copy a range of data from one file to another using the copy_file_range system call.
+    /// This can improve performance by reducing data copying between userspace and kernel.
+    #[allow(clippy::too_many_arguments)]
+    async fn copy_file_range(
+        &self,
+        _req: Request,
+        inode_in: Inode,
+        fh_in: u64,
+        offset_in: u64,
+        inode_out: Inode,
+        fh_out: u64,
+        offset_out: u64,
+        length: u64,
+        flags: u64,
+    ) -> Result<ReplyCopyFileRange> {
+        // Get the handle data for both source and destination files
+        let data_in = self.handle_map.get(fh_in, inode_in).await?;
+        let data_out = self.handle_map.get(fh_out, inode_out).await?;
+
+        // Get file descriptors
+        let fd_in = data_in.borrow_fd().as_raw_fd();
+        let fd_out = data_out.borrow_fd().as_raw_fd();
+
+        // Validate and reject unsupported flags
+        // Linux copy_file_range currently doesn't define any flags (should be 0)
+        if flags != 0 {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL).into());
+        }
+
+        // Convert offsets to i64, checking for overflow (offsets > i64::MAX would wrap to negative)
+        let mut off_in: i64 = offset_in
+            .try_into()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+        let mut off_out: i64 = offset_out
+            .try_into()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+
+        // Convert length to usize, checking for overflow on 32-bit systems
+        let len: usize = length
+            .try_into()
+            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+
+        // SAFETY: copy_file_range reads from fd_in and writes to fd_out. We pass valid
+        // file descriptors and pointers to offset values. The syscall updates the offset
+        // pointers to reflect the new positions after the copy, but doesn't modify the
+        // file descriptor positions themselves (when offsets are non-NULL).
         let res = unsafe {
-            libc::lseek(
-                file.as_raw_fd(),
-                offset as libc::off64_t,
-                whence as libc::c_int,
+            libc::copy_file_range(
+                fd_in,
+                &mut off_in as *mut i64, // Pass offset pointer directly
+                fd_out,
+                &mut off_out as *mut i64, // Pass offset pointer directly
+                len,
+                0, // flags (must be 0, already validated above)
             )
         };
+
         if res < 0 {
             Err(io::Error::last_os_error().into())
         } else {
-            Ok(ReplyLSeek { offset: res as u64 })
+            // res is guaranteed >= 0 here, safe to cast to usize then u64
+            Ok(ReplyCopyFileRange {
+                copied: res as usize as u64,
+            })
         }
     }
 }

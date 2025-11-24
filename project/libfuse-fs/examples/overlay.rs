@@ -96,14 +96,13 @@ fn parse_args() -> Result<Args, std::io::Error> {
 
 fn set_log(args: &Args) {
     let log_level = match args.log_level.as_str() {
-        "error" => tracing::Level::ERROR,
-        "warn" => tracing::Level::WARN,
-        "info" => tracing::Level::INFO,
-        "debug" => tracing::Level::DEBUG,
-        "trace" => tracing::Level::TRACE,
-        _ => tracing::Level::INFO,
+        "error" | "warn" | "info" | "debug" | "trace" => args.log_level.as_str(),
+        _ => "trace",
     };
-    tracing_subscriber::fmt().with_max_level(log_level).init();
+    let filter_str = format!("libfuse_fs={}", log_level);
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter_str));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 #[tokio::main]
@@ -112,6 +111,18 @@ async fn main() -> Result<(), std::io::Error> {
 
     set_log(&args);
 
+    // This is commented out because some testcase(fsstress) may output huge logs, exhausting disk space.
+    // Uncomment this when we need to debug.
+    // let file = std::fs::OpenOptions::new()
+    //     .create(true)
+    //     .write(true)
+    //     .truncate(true)
+    //     .open("/tmp/overlayfs.log")?;
+    // use std::os::unix::io::AsRawFd;
+    // unsafe {
+    //     libc::dup2(file.as_raw_fd(), libc::STDOUT_FILENO);
+    //     libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    // }
     let mut mount_handle = libfuse_fs::overlayfs::mount_fs(OverlayArgs {
         name: Some(args.name),
         mountpoint: args.mountpoint,
@@ -119,7 +130,11 @@ async fn main() -> Result<(), std::io::Error> {
         upperdir: args.upperdir,
         mapping: None::<&str>,
         privileged: true,
-        allow_other: false,
+        // SECURITY: allow_other permits all users to access this filesystem.
+        // This is required for testing with xfstests which uses different UIDs.
+        // In production, set to false unless you specifically need multi-user access
+        // and have proper permission checks in place.
+        allow_other: true,
     })
     .await;
     println!("Mounted");

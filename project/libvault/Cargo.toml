@@ -1,0 +1,97 @@
+[package]
+name = "libvault"
+version = "0.1.0"
+edition = "2024"
+authors = ["rk8s-dev team"]
+description = "the libvault is modified from RustyVault"
+repository = "https://github.com/r2cn-dev/rk8s/tree/main/project/libvault"
+documentation = "https://docs.rs/rusty_vault/latest/rusty_vault/"
+build = "build.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive", "rc", "alloc"] }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
+serde_bytes = { workspace = true }
+serde_yaml = { workspace = true }
+go-defer = { workspace = true }
+rand = "0.8.5"
+derivative = { workspace = true }
+enum-map = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+strum_macros = { workspace = true }
+radix_trie = { workspace = true }
+lazy_static = { workspace = true }
+regex = { workspace = true }
+hcl-rs = { workspace = true }
+log = { workspace = true }
+hex = { workspace = true }
+humantime = { workspace = true }
+as-any = { workspace = true }
+pem = { workspace = true }
+chrono = { workspace = true }
+zeroize = { workspace = true, features = ["zeroize_derive"] }
+bcrypt = { workspace = true }
+url = { workspace = true }
+ureq = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+webpki-roots = { workspace = true }
+glob = { workspace = true }
+base64 = { workspace = true }
+ipnetwork = { workspace = true }
+blake2b_simd = { workspace = true }
+derive_more = { workspace = true }
+dashmap = { workspace = true }
+better_default = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+async-trait = { workspace = true }
+stretto = { workspace = true }
+priority-queue = { workspace = true }
+crossbeam-channel = { workspace = true }
+lockfile = { workspace = true }
+arc-swap = { workspace = true }
+blake3 = { workspace = true }
+itertools = { workspace = true }
+etcd-client = { workspace = true, features = ["tls"] }
+tracing = { workspace = true }
+builder-pattern = { workspace = true }
+x509-parser = { workspace = true }
+rustls-webpki = { workspace = true }
+tonic = "0.14.2"
+openssl = { workspace = true, optional = true }
+openssl-sys = { workspace = true, optional = true }
+
+[build-dependencies]
+toml = { workspace = true }
+
+[features]
+default = ["crypto_adaptor_openssl"]
+crypto_adaptor_openssl = ["dep:openssl", "dep:openssl-sys"]
+crypto_adaptor_tongsuo = ["dep:openssl", "dep:openssl-sys"]
+
+[target.'cfg(unix)'.dependencies]
+daemonize = { workspace = true }
+
+[dependencies.foreign-types]
+version = "0.3.1"
+
+[dependencies.libc]
+version = "0.2"
+
+[lints.clippy]
+result_large_err = "allow"
+ptr_arg = "allow"
+let_and_return = "allow"
+should_implement_trait = "allow"
+new_without_default = "allow"
+field_reassign_with_default = "allow"
+await_holding_lock = "allow"
+too_many_arguments = "allow"
+unnecessary_unwrap = "allow"
+collapsible_match = "allow"
+large_enum_variant = "allow"
+unnecessary_map_or = "allow"
