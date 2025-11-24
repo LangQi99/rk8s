@@ -1,4 +1,3 @@
-use config::{CachePolicy, Config};
 use file_handle::{FileHandle, OpenableFileHandle};
 
 use futures::executor::block_on;
@@ -19,11 +18,11 @@ use std::ops::DerefMut;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use tracing::error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::{
-    collections::{BTreeMap, btree_map},
+    collections::{BTreeMap, HashMap, btree_map},
     ffi::{CStr, CString, OsString},
     fs::File,
     io::{self, Error},
@@ -47,7 +46,7 @@ use vm_memory::bitmap::BitmapSlice;
 use nix::sys::resource::{Resource, getrlimit};
 
 mod async_io;
-mod config;
+pub mod config;
 mod file_handle;
 mod inode_store;
 mod mmap;
@@ -56,6 +55,9 @@ pub mod newlogfs;
 mod os_compat;
 mod statx;
 mod util;
+
+// Re-export commonly used types
+pub use config::{BindMount, CachePolicy, Config};
 
 /// Current directory
 pub const CURRENT_DIR_CSTR: &[u8] = b".\0";
@@ -76,6 +78,7 @@ where
 {
     pub root_dir: P,
     pub mapping: Option<M>,
+    pub bind_mounts: Vec<(PathBuf, PathBuf, bool)>,
 }
 
 pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
@@ -93,6 +96,13 @@ pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
             .as_ref()
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    }
+
+    for (mount_point, host_path, readonly) in args.bind_mounts {
+        config.bind_mounts.insert(
+            mount_point.clone(),
+            BindMount::new(mount_point, host_path, readonly),
+        );
     }
 
     let fs = PassthroughFs::<()>::new(config)?;
@@ -195,6 +205,7 @@ pub struct InodeData {
     // File type and mode
     mode: u32,
     btime: statx_timestamp,
+    readonly: bool,
 }
 
 impl InodeData {
@@ -205,6 +216,7 @@ impl InodeData {
         id: InodeId,
         mode: u32,
         btime: statx_timestamp,
+        readonly: bool,
     ) -> Self {
         InodeData {
             inode,
@@ -213,6 +225,7 @@ impl InodeData {
             refcount: AtomicU64::new(refcount),
             mode,
             btime,
+            readonly,
         }
     }
 
@@ -388,6 +401,104 @@ impl HandleMap {
 #[derive(Debug, Hash, Eq, PartialEq)]
 struct FileUniqueKey(u64, statx_timestamp);
 
+/// Bind mount entry with metadata
+#[derive(Debug, Clone)]
+struct BindMountEntry {
+    /// Mount point inode in the virtual fs
+    mount_point_inode: Inode,
+    /// Host path to bind mount
+    host_path: PathBuf,
+    /// Whether this is readonly
+    readonly: bool,
+    /// Host root directory File descriptor
+    host_root_fd: Arc<File>,
+}
+
+/// Bind mount entry with path information (for readdir)
+#[derive(Debug, Clone)]
+pub(crate) struct BindMountEntryWithPath {
+    /// Mount point inode in the virtual fs
+    pub mount_point_inode: Inode,
+    /// Mount point path
+    pub mount_point: PathBuf,
+    /// Host path to bind mount
+    pub host_path: PathBuf,
+    /// Whether this is readonly
+    pub readonly: bool,
+    /// Host root directory File descriptor
+    pub host_root_fd: Arc<File>,
+}
+
+/// Manages bind mounts
+struct BindMountManager {
+    /// Maps mount point inodes to bind mount entries
+    mounts: RwLock<HashMap<Inode, Arc<BindMountEntry>>>,
+    /// Maps mount point paths to inodes for quick lookup
+    path_to_inode: RwLock<HashMap<PathBuf, Inode>>,
+}
+
+impl BindMountManager {
+    fn new() -> Self {
+        Self {
+            mounts: RwLock::new(HashMap::new()),
+            path_to_inode: RwLock::new(HashMap::new()),
+        }
+    }
+
+    async fn add_mount(&self, mount: Arc<BindMountEntry>, path: PathBuf) {
+        let mut mounts = self.mounts.write().await;
+        let mut path_to_inode = self.path_to_inode.write().await;
+
+        path_to_inode.insert(path, mount.mount_point_inode);
+        mounts.insert(mount.mount_point_inode, mount);
+    }
+
+    async fn get_mount_by_inode(&self, inode: Inode) -> Option<Arc<BindMountEntry>> {
+        self.mounts.read().await.get(&inode).cloned()
+    }
+
+    async fn get_mount_by_path(&self, path: &Path) -> Option<Arc<BindMountEntry>> {
+        let path_to_inode = self.path_to_inode.read().await;
+        let inode = path_to_inode.get(path)?;
+        self.mounts.read().await.get(inode).cloned()
+    }
+
+    async fn remove_mount(&self, inode: Inode) -> Option<Arc<BindMountEntry>> {
+        let mut mounts = self.mounts.write().await;
+        let mount = mounts.remove(&inode)?;
+
+        // Remove from path_to_inode as well
+        let mut path_to_inode = self.path_to_inode.write().await;
+        path_to_inode.retain(|_, v| *v != inode);
+
+        Some(mount)
+    }
+
+    async fn is_bind_mount(&self, inode: Inode) -> bool {
+        self.mounts.read().await.contains_key(&inode)
+    }
+
+    /// Get all bind mounts with their mount points
+    async fn get_all_mounts(&self) -> Vec<BindMountEntryWithPath> {
+        let mounts = self.mounts.read().await;
+        let path_to_inode = self.path_to_inode.read().await;
+
+        let mut result = Vec::new();
+        for (path, inode) in path_to_inode.iter() {
+            if let Some(mount) = mounts.get(inode) {
+                result.push(BindMountEntryWithPath {
+                    mount_point_inode: mount.mount_point_inode,
+                    mount_point: path.clone(),
+                    host_path: mount.host_path.clone(),
+                    readonly: mount.readonly,
+                    host_root_fd: Arc::clone(&mount.host_root_fd),
+                });
+            }
+        }
+        result
+    }
+}
+
 /// A file system that simply "passes through" all requests it receives to the underlying file
 /// system.
 ///
@@ -453,16 +564,19 @@ pub struct PassthroughFs<S: BitmapSlice + Send + Sync = ()> {
     handle_cache: Cache<FileUniqueKey, Arc<FileHandle>>,
 
     mmap_chunks: Cache<MmapChunkKey, Arc<RwLock<mmap::MmapCachedValue>>>,
+
+    // Bind mount manager
+    bind_mount_manager: BindMountManager,
 }
 
 impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     /// Create a Passthrough file system instance.
     pub fn new(mut cfg: Config) -> Result<PassthroughFs<S>> {
-        if cfg.no_open && cfg.cache_policy != CachePolicy::Always {
+        if cfg.no_open && cfg.cache_policy != config::CachePolicy::Always {
             warn!("passthroughfs: no_open only work with cache=always, reset to open mode");
             cfg.no_open = false;
         }
-        if cfg.writeback && cfg.cache_policy == CachePolicy::Never {
+        if cfg.writeback && cfg.cache_policy == config::CachePolicy::Never {
             warn!(
                 "passthroughfs: writeback cache conflicts with cache=none, reset to no_writeback"
             );
@@ -537,6 +651,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             handle_cache: moka::future::Cache::new(fd_limit),
 
             mmap_chunks: mmap_cache_builder.build(),
+
+            bind_mount_manager: BindMountManager::new(),
         })
     }
 
@@ -569,10 +685,187 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 st.st.st_mode,
                 st.btime
                     .ok_or_else(|| io::Error::other("birth time not available"))?,
+                false,
             )))
             .await;
 
+        // Initialize bind mounts from config
+        self.init_bind_mounts().await?;
+
         Ok(())
+    }
+
+    /// Initialize bind mounts from configuration
+    async fn init_bind_mounts(&self) -> Result<()> {
+        for (mount_point, bind_mount) in &self.cfg.bind_mounts {
+            self.add_bind_mount_internal(
+                mount_point.clone(),
+                bind_mount.host_path.clone(),
+                bind_mount.readonly,
+            )
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to initialize bind mount {:?} -> {:?}: {:?}",
+                    mount_point, bind_mount.host_path, e
+                );
+                e
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Add a bind mount at runtime
+    pub async fn add_bind_mount(
+        &self,
+        mount_point: PathBuf,
+        host_path: PathBuf,
+        readonly: bool,
+    ) -> Result<()> {
+        // Check for circular mount
+        self.check_circular_mount(&mount_point, &host_path)?;
+        self.add_bind_mount_internal(mount_point, host_path, readonly)
+            .await
+    }
+
+    /// Internal method to add a bind mount
+    async fn add_bind_mount_internal(
+        &self,
+        mount_point: PathBuf,
+        host_path: PathBuf,
+        readonly: bool,
+    ) -> Result<()> {
+        debug!(
+            "Adding bind mount: {:?} -> {:?} (readonly: {})",
+            mount_point, host_path, readonly
+        );
+
+        // Verify host path exists and is accessible
+        let host_path_cstr = CString::new(
+            host_path
+                .to_str()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid host path"))?,
+        )
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid host path"))?;
+
+        let host_root_file = Self::open_file(
+            &libc::AT_FDCWD,
+            &host_path_cstr,
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0,
+        )?;
+
+        // Ensure physical directory exists
+        let physical_path = Path::new(&self.cfg.root_dir).join(&mount_point);
+        if !physical_path.exists() {
+            std::fs::create_dir_all(&physical_path)?;
+        }
+
+        // Get file handle and stat info for the host directory
+        let (handle_arc, st) = {
+            let current_dir_cstr = CStr::from_bytes_with_nul(CURRENT_DIR_CSTR).unwrap();
+            self.open_file_and_handle(&host_root_file, current_dir_cstr)
+                .await?
+        };
+
+        // Use the actual inode from the host filesystem
+        let id = InodeId::from_stat(&st);
+
+        // Allocate a virtual inode for the mount point
+        let mount_point_inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
+
+        // Create inode data and add to inode_map
+        let handle = InodeHandle::Handle(self.to_openable_handle(Arc::clone(&handle_arc))?);
+        let inode_data = Arc::new(InodeData::new(
+            mount_point_inode,
+            handle,
+            1, // Initial refcount
+            id,
+            st.st.st_mode,
+            st.btime
+                .ok_or_else(|| io::Error::other("birth time not available"))?,
+            readonly,
+        ));
+
+        // Add to inode_map
+        {
+            let mut inodes = self.inode_map.inodes.write().await;
+            InodeMap::insert_locked(&mut inodes, inode_data);
+        }
+
+        let entry = Arc::new(BindMountEntry {
+            mount_point_inode,
+            host_path: host_path.clone(),
+            readonly,
+            host_root_fd: Arc::new(host_root_file),
+        });
+
+        self.bind_mount_manager
+            .add_mount(entry, mount_point.clone())
+            .await;
+
+        debug!("Bind mount added successfully: inode {}", mount_point_inode);
+        Ok(())
+    }
+
+    /// Check for circular mount (prevent mounting a parent into a child)
+    fn check_circular_mount(&self, mount_point: &Path, host_path: &Path) -> Result<()> {
+        // Build full mount point path
+        let mount_full = Path::new(&self.cfg.root_dir).join(mount_point);
+
+        // Try to canonicalize both paths
+        let mount_abs = match std::fs::canonicalize(&mount_full) {
+            Ok(p) => p,
+            Err(_) => {
+                // Mount point doesn't exist yet, use root_dir + mount_point
+                match std::fs::canonicalize(&self.cfg.root_dir) {
+                    Ok(root) => root.join(mount_point),
+                    Err(_) => mount_full,
+                }
+            }
+        };
+
+        let host_abs = std::fs::canonicalize(host_path).unwrap_or_else(|_| host_path.to_path_buf());
+
+        // Check if host_path is a parent of mount_point or vice versa
+        if mount_abs.starts_with(&host_abs) || host_abs.starts_with(&mount_abs) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Circular mount detected: mount point and host path overlap",
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Remove a bind mount
+    pub async fn remove_bind_mount(&self, mount_point: &Path) -> Result<()> {
+        if let Some(mount) = self.bind_mount_manager.get_mount_by_path(mount_point).await {
+            self.bind_mount_manager
+                .remove_mount(mount.mount_point_inode)
+                .await;
+            debug!("Removed bind mount at {:?}", mount_point);
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Bind mount not found",
+            ))
+        }
+    }
+
+    /// Check if an inode is a bind mount point
+    pub async fn is_bind_mount(&self, inode: Inode) -> bool {
+        self.bind_mount_manager.is_bind_mount(inode).await
+    }
+
+    /// Check if an inode is within a readonly bind mount
+    /// Returns true if the inode itself or any of its ancestors is a readonly bind mount
+    async fn is_readonly_bind_mount(&self, inode: Inode) -> bool {
+        if let Ok(data) = self.inode_map.get(inode).await {
+            return data.readonly;
+        }
+        false
     }
 
     /// Get the list of file descriptors which should be reserved across live upgrade.
@@ -757,12 +1050,66 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             name
         };
 
-        let dir = self.inode_map.get(parent).await?;
-        let dir_file = dir.get_file()?;
-        let (handle_arc, st) = self.open_file_and_handle(&dir_file, name).await?;
+        // Check if we're looking up a bind mount point itself
+        // For example, looking up "volumes" from the root
+        if parent == ROOT_ID {
+            let name_bytes = name.to_bytes();
+            let name_osstr = std::ffi::OsStr::new(std::str::from_utf8(name_bytes).unwrap_or(""));
+            let name_path = PathBuf::from(name_osstr);
+            if let Some(bind_mount) = self.bind_mount_manager.get_mount_by_path(&name_path).await {
+                debug!(
+                    "Looking up bind mount point: {:?}, using inode {}",
+                    name_path, bind_mount.mount_point_inode
+                );
+
+                // Use open_file_and_handle to get the stat info
+                let current_dir_cstr = CStr::from_bytes_with_nul(CURRENT_DIR_CSTR).unwrap();
+                let (_, st) = self
+                    .open_file_and_handle(&bind_mount.host_root_fd, current_dir_cstr)
+                    .await?;
+
+                let mut attr = convert_stat64_to_file_attr(st.st);
+                attr.ino = bind_mount.mount_point_inode;
+
+                // Increment refcount to prevent inode from being removed when forget is called
+                if let Ok(data) = self.inode_map.get(bind_mount.mount_point_inode).await {
+                    data.refcount.fetch_add(1, Ordering::Relaxed);
+                }
+
+                return Ok(ReplyEntry {
+                    ttl: self.dir_entry_timeout,
+                    attr,
+                    generation: 0,
+                });
+            }
+        }
+
+        // Check if parent is a bind mount point
+        let (handle_arc, st, parent_readonly) =
+            if let Some(bind_mount) = self.bind_mount_manager.get_mount_by_inode(parent).await {
+                debug!(
+                    "Lookup in bind mount: parent inode {}, name {:?}, host path {:?}",
+                    parent,
+                    name.to_string_lossy(),
+                    bind_mount.host_path
+                );
+
+                // Lookup from host path
+                let (h, s) = self
+                    .open_file_and_handle(&bind_mount.host_root_fd, name)
+                    .await?;
+                (h, s, bind_mount.readonly)
+            } else {
+                // Normal lookup from parent inode
+                let dir = self.inode_map.get(parent).await?;
+                let dir_file = dir.get_file()?;
+                let (h, s) = self.open_file_and_handle(&dir_file, name).await?;
+                (h, s, dir.readonly)
+            };
+
         let id = InodeId::from_stat(&st);
         debug!(
-            "do_lookup: parent: {}, name: {}, handle_arc: {:?}, id: {:?}",
+            "do_lookup: parent: {}, name: {:?}, handle_arc: {:?}, id: {:?}",
             parent,
             name.to_string_lossy(),
             handle_arc,
@@ -843,6 +1190,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                             st.st.st_mode,
                             st.btime
                                 .ok_or_else(|| io::Error::other("birth time not available"))?,
+                            parent_readonly,
                         )),
                     );
 
@@ -1271,6 +1619,7 @@ mod tests {
         let args = PassthroughArgs {
             root_dir: source_dir.clone(),
             mapping: None::<&str>,
+            bind_mounts: vec![],
         };
         let fs = match super::new_passthroughfs_layer(args).await {
             Ok(fs) => fs,
