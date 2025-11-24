@@ -3,6 +3,9 @@
 
 set -e
 
+# Ensure cargo is in PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'

@@ -18,7 +18,7 @@ use std::ops::DerefMut;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use tracing::error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::{
