@@ -26,8 +26,41 @@ struct Args {
     /// Options, currently contains uid/gid mapping info
     #[arg(long, short)]
     mapping: Option<String>,
+    /// Bind mount: mount_point:host_path or mount_point:host_path:ro
+    /// Can be specified multiple times.
+    /// Example: --bind volumes:/tmp/host --bind data:/tmp/data:ro
+    #[arg(long, value_parser = parse_bind_mount)]
+    bind: Vec<BindMountArg>,
     #[arg(long)]
     allow_other: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BindMountArg {
+    mount_point: std::path::PathBuf,
+    host_path: std::path::PathBuf,
+    readonly: bool,
+}
+
+fn parse_bind_mount(s: &str) -> Result<BindMountArg, String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(format!(
+            "Invalid bind mount format '{}'. Expected: mount_point:host_path[:ro]",
+            s
+        ));
+    }
+    
+    let mount_point = std::path::PathBuf::from(parts[0]);
+    let host_path = std::path::PathBuf::from(parts[1]);
+    let readonly = parts.get(2).map(|&s| s == "ro").unwrap_or(false);
+    
+    Ok(BindMountArg {
+        mount_point,
+        host_path,
+        readonly,
+    })
 }
 
 fn set_log() {
@@ -44,6 +77,8 @@ async fn main() {
     set_log();
     debug!("Starting overlay filesystem with args: {:?}", args);
 
+    let bind_mounts = args.bind.iter().map(|b| (b.mount_point.clone(), b.host_path.clone(), b.readonly)).collect();
+
     let mut mount_handle = mount_fs(OverlayArgs {
         name: None::<String>,
         mountpoint: args.mountpoint,
@@ -52,6 +87,7 @@ async fn main() {
         mapping: args.mapping,
         privileged: args.privileged,
         allow_other: args.allow_other,
+        bind_mounts,
     })
     .await;
 
