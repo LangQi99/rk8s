@@ -76,6 +76,7 @@ where
 {
     pub root_dir: P,
     pub mapping: Option<M>,
+    pub bind_mounts: Vec<(PathBuf, PathBuf, bool)>,
 }
 
 pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
@@ -93,6 +94,13 @@ pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
             .as_ref()
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    }
+
+    for (mount_point, host_path, readonly) in args.bind_mounts {
+        config.bind_mounts.insert(
+            mount_point.clone(),
+            config::BindMount::new(mount_point, host_path, readonly),
+        );
     }
 
     let fs = PassthroughFs::<()>::new(config)?;
@@ -572,12 +580,68 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             )))
             .await;
 
+        self.mount_binds()?;
+
         Ok(())
     }
 
     /// Get the list of file descriptors which should be reserved across live upgrade.
     pub fn keep_fds(&self) -> Vec<RawFd> {
         vec![self.proc_self_fd.as_raw_fd()]
+    }
+
+    fn mount_binds(&self) -> Result<()> {
+        for bind in self.cfg.bind_mounts.values() {
+            let target = self.cfg.root_dir.join(&bind.mount_point);
+            let source = &bind.host_path;
+
+            debug!(
+                "Mounting bind: source={:?}, target={:?}, readonly={}",
+                source, target, bind.readonly
+            );
+
+            // Ensure target directory exists
+            if !target.exists() {
+                std::fs::create_dir_all(&target)?;
+            }
+
+            // Bind mount
+            let mut flags = libc::MS_BIND;
+            let source_cstr = CString::new(source.to_str().ok_or(Error::from_raw_os_error(libc::EINVAL))?)?;
+            let target_cstr = CString::new(target.to_str().ok_or(Error::from_raw_os_error(libc::EINVAL))?)?;
+
+            let ret = unsafe {
+                libc::mount(
+                    source_cstr.as_ptr(),
+                    target_cstr.as_ptr(),
+                    std::ptr::null(),
+                    flags,
+                    std::ptr::null(),
+                )
+            };
+
+            if ret < 0 {
+                return Err(Error::last_os_error());
+            }
+
+            // Remount read-only if requested
+            if bind.readonly {
+                flags |= libc::MS_REMOUNT | libc::MS_RDONLY;
+                let ret = unsafe {
+                    libc::mount(
+                        source_cstr.as_ptr(),
+                        target_cstr.as_ptr(),
+                        std::ptr::null(),
+                        flags,
+                        std::ptr::null(),
+                    )
+                };
+                if ret < 0 {
+                    return Err(Error::last_os_error());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn readlinkat(dfd: i32, pathname: &CStr) -> Result<PathBuf> {

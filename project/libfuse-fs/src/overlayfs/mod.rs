@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io::{Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use config::Config;
 use futures::StreamExt as _;
@@ -2724,6 +2724,7 @@ where
     pub mapping: Option<M>,
     pub name: Option<N>,
     pub allow_other: bool,
+    pub bind_mounts: Vec<(PathBuf, PathBuf, bool)>,
 }
 
 /// Mounts the filesystem using the given parameters and returns the mount handle.
@@ -2756,6 +2757,7 @@ where
         let layer = new_passthroughfs_layer(PassthroughArgs {
             root_dir: lower,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: Vec::new(),
         })
         .await
         .expect("Failed to create lower filesystem layer");
@@ -2766,6 +2768,7 @@ where
         new_passthroughfs_layer(PassthroughArgs {
             root_dir: args.upperdir,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: args.bind_mounts,
         })
         .await
         .expect("Failed to create upper filesystem layer"),
