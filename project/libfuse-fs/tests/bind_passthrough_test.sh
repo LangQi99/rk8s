@@ -59,14 +59,20 @@ cleanup() {
     
     # Unmount bind mounts in source directory
     # We need to do this because the FUSE process (running as root) created them
-    if mountpoint -q "${SRC_DIR}/volumes" 2>/dev/null; then
-         echo_info "卸载 bind mount: ${SRC_DIR}/volumes"
-         sudo umount "${SRC_DIR}/volumes" 2>/dev/null || true
-    fi
-    if mountpoint -q "${SRC_DIR}/logs" 2>/dev/null; then
-         echo_info "卸载 bind mount: ${SRC_DIR}/logs"
-         sudo umount "${SRC_DIR}/logs" 2>/dev/null || true
-    fi
+    # Unmount bind mounts in source directory
+    # We need to do this because the FUSE process (running as root) created them
+    # Use a loop to ensure they are unmounted
+    for i in {1..5}; do
+        if mountpoint -q "${SRC_DIR}/volumes" 2>/dev/null; then
+             echo_info "卸载 bind mount: ${SRC_DIR}/volumes (attempt $i)"
+             sudo umount -R "${SRC_DIR}/volumes" || sudo umount -l "${SRC_DIR}/volumes" || true
+        fi
+        if mountpoint -q "${SRC_DIR}/logs" 2>/dev/null; then
+             echo_info "卸载 bind mount: ${SRC_DIR}/logs (attempt $i)"
+             sudo umount -R "${SRC_DIR}/logs" || sudo umount -l "${SRC_DIR}/logs" || true
+        fi
+        sleep 0.5
+    done
 
     if [ -d "${TEST_DIR}" ]; then
         echo_info "删除测试目录..."

@@ -179,19 +179,76 @@ echo_info "$ cat ${HOST_DIR}/new.txt"
 cat "${HOST_DIR}/new.txt"
 echo_success "Pass - 文件正确写入宿主目录！"
 
-echo_step "测试 7: 只读 bind mount (/logs)"
+echo_step "测试 7: 创建目录和文件"
+echo_info "$ mkdir ${MNT_DIR}/volumes/newdir"
+sudo mkdir "${MNT_DIR}/volumes/newdir"
+echo_info "$ echo 'test' > ${MNT_DIR}/volumes/newdir/test.txt"
+sudo sh -c "echo 'test content' > ${MNT_DIR}/volumes/newdir/test.txt"
+sync
+echo_success "Pass - 目录和文件已创建"
+
+echo_step "测试 8: 验证新目录在宿主"
+echo_info "$ ls -lh ${HOST_DIR}/newdir"
+ls -lh "${HOST_DIR}/newdir"
+echo_info "$ cat ${HOST_DIR}/newdir/test.txt"
+cat "${HOST_DIR}/newdir/test.txt"
+echo_success "Pass - 新目录和文件都在宿主目录！"
+
+echo_step "测试 9: 统计文件数量"
+HOST_COUNT=$(find "${HOST_DIR}" -type f | wc -l)
+MOUNT_COUNT=$(find "${MNT_DIR}/volumes" -type f | wc -l)
+echo_info "宿主目录文件数: ${HOST_COUNT}"
+echo_info "挂载目录文件数: ${MOUNT_COUNT}"
+if [ "${HOST_COUNT}" -eq "${MOUNT_COUNT}" ]; then
+    echo_success "Pass - 文件数量一致"
+else
+    echo_error "文件数量不匹配"
+fi
+
+echo_step "测试 10: 只读 bind mount (/logs)"
 echo_info "$ ls -lh ${MNT_DIR}/logs"
 ls -lh "${MNT_DIR}/logs"
 echo_success "Pass - 可以列出只读目录"
 
-echo_step "测试 8: 只读保护验证 - 创建文件"
+echo_step "测试 11: 读取只读 bind mount 文件"
+echo_info "$ cat ${MNT_DIR}/logs/readonly.txt"
+cat "${MNT_DIR}/logs/readonly.txt"
+echo_success "Pass - 可以读取只读 bind mount 的文件"
+
+echo_step "测试 12: 只读保护验证 - 创建文件"
 echo_info "$ 尝试在只读 bind mount 创建文件（应该失败）"
 if sudo sh -c "echo 'should fail' > ${MNT_DIR}/logs/test.txt" 2>&1 | grep -q "Read-only file system"; then
-    echo_success "Pass - 只读保护正常"
+    echo_success "Pass - 只读保护正常（收到'只读文件系统'错误）"
 elif [ ! -f "${HOST2_DIR}/test.txt" ]; then
     echo_success "Pass - 只读保护正常（写入被拒绝）"
 else
     echo_error "只读保护失败 - 文件不应该被创建"
+fi
+
+echo_step "测试 13: 只读保护验证 - 修改现有文件"
+echo_info "$ 尝试修改只读 bind mount 中的现有文件（应该失败）"
+if sudo sh -c "echo 'append' >> ${MNT_DIR}/logs/readonly.txt" 2>&1 | grep -q "Read-only file system"; then
+     echo_success "Pass - 修改保护正常"
+elif grep -q "append" "${HOST2_DIR}/readonly.txt"; then
+     echo_error "只读保护失败 - 文件被修改"
+else
+     echo_success "Pass - 修改被拒绝"
+fi
+
+echo_step "测试 14: 只读保护验证 - 重命名/移动"
+echo_info "$ 尝试重命名只读 bind mount 中的文件（应该失败）"
+if sudo mv "${MNT_DIR}/logs/readonly.txt" "${MNT_DIR}/logs/moved.txt" 2>/dev/null; then
+    echo_error "只读保护失败 - 文件被重命名"
+else
+    echo_success "Pass - 重命名被拒绝"
+fi
+
+echo_step "测试 15: 只读保护验证 - 删除"
+echo_info "$ 尝试删除只读 bind mount 中的文件（应该失败）"
+if sudo rm "${MNT_DIR}/logs/readonly.txt" 2>/dev/null; then
+    echo_error "只读保护失败 - 文件被删除"
+else
+    echo_success "Pass - 删除被拒绝"
 fi
 
 echo ""
