@@ -6,8 +6,10 @@ use clap::Parser;
 use libfuse_fs::passthrough::{
     PassthroughArgs, new_passthroughfs_layer, newlogfs::LoggingFileSystem,
 };
+use libfuse_fs::util::bind::BindManager;
 use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
+use std::path::Path;
 use tokio::signal;
 use tracing::debug;
 
@@ -32,6 +34,9 @@ struct Args {
     options: Option<String>,
     #[arg(long)]
     allow_other: bool,
+    /// Bind mount options: target:source[:ro]
+    #[arg(long)]
+    bind: Vec<String>,
 }
 
 fn set_log() {
@@ -47,6 +52,11 @@ async fn main() {
     let args = Args::parse();
     set_log();
     debug!("Starting passthrough filesystem with args: {:?}", args);
+
+    let mut bind_manager = BindManager::new();
+    bind_manager
+        .mount_all(Path::new(&args.rootdir), &args.bind)
+        .expect("Failed to setup bind mounts");
 
     let fs = new_passthroughfs_layer(PassthroughArgs {
         root_dir: args.rootdir,

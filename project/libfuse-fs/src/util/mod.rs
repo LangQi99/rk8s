@@ -1,5 +1,6 @@
 pub mod mapping;
 pub mod open_options;
+pub mod bind;
 
 use tracing::error;
 

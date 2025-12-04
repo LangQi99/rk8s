@@ -5,6 +5,8 @@
 
 use clap::Parser;
 use libfuse_fs::overlayfs::{OverlayArgs, mount_fs};
+use libfuse_fs::util::bind::BindManager;
+use std::path::Path;
 use tokio::signal;
 use tracing::debug;
 
@@ -28,6 +30,9 @@ struct Args {
     mapping: Option<String>,
     #[arg(long)]
     allow_other: bool,
+    /// Bind mount options: target:source[:ro]
+    #[arg(long)]
+    bind: Vec<String>,
 }
 
 fn set_log() {
@@ -43,6 +48,12 @@ async fn main() {
     let args = Args::parse();
     set_log();
     debug!("Starting overlay filesystem with args: {:?}", args);
+
+    let mut bind_manager = BindManager::new();
+    // Bind mounts are applied to the upper directory
+    bind_manager
+        .mount_all(Path::new(&args.upperdir), &args.bind)
+        .expect("Failed to setup bind mounts");
 
     let mut mount_handle = mount_fs(OverlayArgs {
         name: None::<String>,
