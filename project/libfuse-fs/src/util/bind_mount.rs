@@ -70,10 +70,23 @@ impl BindMountManager {
         for bind in bind_specs {
             let target_path = self.mountpoint.join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
             
-            // Create target directory if it doesn't exist
+            // Check if source is a file or directory
+            let source_metadata = std::fs::metadata(&bind.source)?;
+            
             if !target_path.exists() {
-                std::fs::create_dir_all(&target_path)?;
-                debug!("Created target directory: {:?}", target_path);
+                if source_metadata.is_file() {
+                    // For file bind mounts, create parent directory and an empty file
+                    if let Some(parent) = target_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                        debug!("Created parent directory: {:?}", parent);
+                    }
+                    std::fs::File::create(&target_path)?;
+                    debug!("Created target file: {:?}", target_path);
+                } else {
+                    // For directory bind mounts, create the directory
+                    std::fs::create_dir_all(&target_path)?;
+                    debug!("Created target directory: {:?}", target_path);
+                }
             }
 
             // Perform the bind mount
