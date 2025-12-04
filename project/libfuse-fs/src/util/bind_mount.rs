@@ -138,22 +138,32 @@ impl BindMountManager {
         Ok(())
     }
 
+/// Result of validating a mount target path
+enum ValidateResult {
+    /// Path is valid and canonicalized
+    Valid(PathBuf),
+    /// Path doesn't exist (likely already unmounted), safe to skip
+    AlreadyUnmounted,
+    /// Path exists but cannot be validated, skip for safety
+    ValidationFailed(Error),
+}
+
+impl BindMountManager {
     /// Validates and canonicalizes a mount target path
-    /// Returns Ok(canonical_path) if valid, or Err if should be skipped
-    fn validate_mount_target(target: &Path) -> std::result::Result<PathBuf, Option<Error>> {
+    fn validate_mount_target(target: &Path) -> ValidateResult {
         match target.canonicalize() {
-            Ok(canonical) => Ok(canonical),
+            Ok(canonical) => ValidateResult::Valid(canonical),
             Err(e) => {
                 // Security: If we cannot canonicalize, we cannot validate the path safely
                 // Two cases: 
-                // 1. Path doesn't exist (already unmounted) - safe to skip, return Err(None)
-                // 2. Path is malicious/invalid - unsafe to attempt unmount, return Err(Some(error))
+                // 1. Path doesn't exist → likely already unmounted, safe to skip
+                // 2. Path exists but validation fails → potentially malicious, skip for safety
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    debug!("Mount {:?} not found (likely already unmounted)", target);
-                    Err(None) // Skip without error
+                    debug!("Mount target {:?} not found", target);
+                    ValidateResult::AlreadyUnmounted
                 } else {
-                    error!("Cannot canonicalize {:?}: {}. Skipping for safety.", target, e);
-                    Err(Some(e)) // Skip with error
+                    error!("Cannot canonicalize mount target {:?}: {}", target, e);
+                    ValidateResult::ValidationFailed(e)
                 }
             }
         }
@@ -183,19 +193,19 @@ impl BindMountManager {
                 // Verify the mount point is actually under our mountpoint
                 // This prevents accidentally unmounting host mounts
                 let canonical_target = match Self::validate_mount_target(&mount.target) {
-                    Ok(path) => path,
-                    Err(Some(e)) => {
+                    ValidateResult::Valid(path) => path,
+                    ValidateResult::AlreadyUnmounted => continue,
+                    ValidateResult::ValidationFailed(e) => {
                         errors.push(e);
                         continue;
                     }
-                    Err(None) => continue, // Already unmounted, skip
                 };
                 
                 if !canonical_target.starts_with(&canonical_mountpoint) {
                     error!(
-                        "Skipping unmount of {:?}: not under mountpoint {:?}",
-                        canonical_target, canonical_mountpoint
+                        "Security: Refusing to unmount path outside mountpoint (mount may have been compromised)"
                     );
+                    debug!("  Attempted: {:?}, Expected under: {:?}", canonical_target, canonical_mountpoint);
                     continue;
                 }
                 
