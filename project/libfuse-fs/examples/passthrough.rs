@@ -10,7 +10,7 @@ use libfuse_fs::util::bind_mount::{BindMount, BindMountManager};
 use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
 use tokio::signal;
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,7 +58,7 @@ async fn main() {
         .iter()
         .map(|s| BindMount::parse(s))
         .collect();
-    
+
     let bind_specs = match bind_specs {
         Ok(specs) => specs,
         Err(e) => {
