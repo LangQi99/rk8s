@@ -8,6 +8,7 @@ use libfuse_fs::passthrough::{
 };
 use rfuse3::{MountOptions, raw::Session};
 use std::ffi::OsString;
+use std::path::PathBuf;
 use tokio::signal;
 use tracing::debug;
 
@@ -27,11 +28,45 @@ struct Args {
     /// Use privileged mount instead of unprivileged (default false)
     #[arg(long, default_value_t = false)]
     privileged: bool,
+    /// Bind mount: mount_point:host_path or mount_point:host_path:ro
+    /// Can be specified multiple times.
+    /// Example: --bind volumes:/tmp/host --bind data:/tmp/data:ro
+    #[arg(long, value_parser = parse_bind_mount)]
+    bind: Vec<BindMountArg>,
+
     /// Options, currently contains uid/gid mapping info
     #[arg(long, short)]
     options: Option<String>,
     #[arg(long)]
     allow_other: bool,
+}
+
+#[derive(Debug, Clone)]
+struct BindMountArg {
+    mount_point: PathBuf,
+    host_path: PathBuf,
+    readonly: bool,
+}
+
+fn parse_bind_mount(s: &str) -> Result<BindMountArg, String> {
+    let parts: Vec<&str> = s.split(':').collect();
+
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(format!(
+            "Invalid bind mount format '{}'. Expected: mount_point:host_path[:ro]",
+            s
+        ));
+    }
+
+    let mount_point = PathBuf::from(parts[0]);
+    let host_path = PathBuf::from(parts[1]);
+    let readonly = parts.get(2).map(|&s| s == "ro").unwrap_or(false);
+
+    Ok(BindMountArg {
+        mount_point,
+        host_path,
+        readonly,
+    })
 }
 
 fn set_log() {
@@ -48,12 +83,20 @@ async fn main() {
     set_log();
     debug!("Starting passthrough filesystem with args: {:?}", args);
 
-    let fs = new_passthroughfs_layer(PassthroughArgs {
-        root_dir: args.rootdir,
-        mapping: args.options,
-    })
-    .await
-    .expect("Failed to init passthrough fs");
+    let mut bind_mounts = Vec::new();
+    for bind in &args.bind {
+        bind_mounts.push((bind.mount_point.clone(), bind.host_path.clone(), bind.readonly));
+    }
+
+    let passthrough_args = PassthroughArgs {
+        root_dir: &args.rootdir,
+        mapping: args.options.as_deref(),
+        bind_mounts,
+    };
+
+    let fs = new_passthroughfs_layer(passthrough_args)
+        .await
+        .expect("failed to create passthrough fs");
 
     let fs = LoggingFileSystem::new(fs);
     let mount_path = OsString::from(&args.mountpoint);
