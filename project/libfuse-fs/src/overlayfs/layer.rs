@@ -223,7 +223,8 @@ mod test {
         let fs = unwrap_or_skip_eperm!(
             new_passthroughfs_layer(PassthroughArgs {
                 root_dir: rootdir,
-                mapping: None::<&str>
+                mapping: None::<&str>,
+                bind_mounts: vec![],
             })
             .await,
             "init passthrough layer"
@@ -255,7 +256,8 @@ mod test {
         let fs = unwrap_or_skip_eperm!(
             new_passthroughfs_layer(PassthroughArgs {
                 root_dir: rootdir,
-                mapping: None::<&str>
+                mapping: None::<&str>,
+                bind_mounts: vec![],
             })
             .await,
             "init passthrough layer"
@@ -300,7 +302,8 @@ mod test {
         let fs = unwrap_or_skip_eperm!(
             new_passthroughfs_layer(PassthroughArgs {
                 root_dir: rootdir,
-                mapping: None::<&str>
+                mapping: None::<&str>,
+                bind_mounts: vec![],
             })
             .await,
             "init passthrough layer"
