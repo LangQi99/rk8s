@@ -600,9 +600,17 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 source, target, bind.readonly
             );
 
-            // Ensure target directory exists
+            // Ensure target directory/file exists
             if !target.exists() {
-                std::fs::create_dir_all(&target)?;
+                let metadata = std::fs::metadata(source)?;
+                if metadata.is_dir() {
+                    std::fs::create_dir_all(&target)?;
+                } else {
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::File::create(&target)?;
+                }
             }
 
             // Bind mount
