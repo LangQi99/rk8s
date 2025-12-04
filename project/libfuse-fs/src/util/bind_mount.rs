@@ -135,6 +135,27 @@ impl BindMountManager {
             return Err(err);
         }
 
+        // Prevent mount propagation issues by making the mount point a slave.
+        // This ensures that unmounting the target doesn't propagate back to the host/source
+        // if they are part of a shared subtree (which is common on modern Linux).
+        let ret = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                target_cstr.as_ptr(),
+                std::ptr::null(),
+                libc::MS_SLAVE | libc::MS_REC,
+                std::ptr::null(),
+            )
+        };
+
+        if ret != 0 {
+            let err = Error::last_os_error();
+            error!("Failed to set mount propagation for {:?}: {}", target, err);
+            // Attempt cleanup
+            unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+            return Err(err);
+        }
+
         Ok(())
     }
 
