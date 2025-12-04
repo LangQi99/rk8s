@@ -209,12 +209,12 @@ impl BindMountManager {
             let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
 
             if ret != 0 {
-                let err = Error::last_os_error();
+                let lazy_err = Error::last_os_error();
                 // EINVAL or ENOENT might mean it's already unmounted
-                if err.raw_os_error() != Some(libc::EINVAL)
-                    && err.raw_os_error() != Some(libc::ENOENT)
+                if lazy_err.raw_os_error() != Some(libc::EINVAL)
+                    && lazy_err.raw_os_error() != Some(libc::ENOENT)
                 {
-                    return Err(err);
+                    return Err(lazy_err);
                 }
             }
             debug!("Successfully unmounted {:?} with lazy unmount", target);
