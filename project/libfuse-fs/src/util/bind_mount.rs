@@ -191,7 +191,8 @@ impl BindMountManager {
 
         if ret != 0 {
             let err = Error::last_os_error();
-            // EINVAL or ENOENT might mean it's already unmounted
+            // EINVAL means target is not a mountpoint, ENOENT means target doesn't exist
+            // Both indicate the mount is already unmounted or never existed
             if err.raw_os_error() == Some(libc::EINVAL)
                 || err.raw_os_error() == Some(libc::ENOENT)
             {
@@ -200,9 +201,9 @@ impl BindMountManager {
             }
             
             // If busy, try lazy unmount as last resort
-            // But log a warning since this can have side effects
+            // Warning: this can have side effects on bind mounts
             if err.raw_os_error() == Some(libc::EBUSY) {
-                debug!("Mount {:?} is busy, attempting lazy unmount", target);
+                info!("Mount {:?} is busy, attempting lazy unmount", target);
                 let ret2 = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
                 if ret2 != 0 {
                     let err2 = Error::last_os_error();
