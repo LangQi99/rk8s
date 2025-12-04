@@ -143,6 +143,19 @@ impl BindMountManager {
         let mut mounts = self.mounts.lock().await;
         let mut errors = Vec::new();
 
+        // Canonicalize mountpoint once at the start
+        // If this fails, we cannot safely validate paths, so abort
+        let canonical_mountpoint = match self.mountpoint.canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                error!("Could not canonicalize mountpoint {:?}: {}. Aborting unmount for safety.", self.mountpoint, e);
+                return Err(Error::other(format!(
+                    "Cannot validate mountpoint {:?}: {}",
+                    self.mountpoint, e
+                )));
+            }
+        };
+
         // Unmount in reverse order
         while let Some(mut mount) = mounts.pop() {
             if mount.mounted {
@@ -152,18 +165,19 @@ impl BindMountManager {
                 let canonical_target = match mount.target.canonicalize() {
                     Ok(path) => path,
                     Err(e) => {
-                        // If canonicalize fails, the path might not exist (already unmounted)
-                        // Try unmounting anyway, it will fail safely if not mounted
-                        debug!("Could not canonicalize {:?}: {}", mount.target, e);
-                        mount.target.clone()
-                    }
-                };
-                
-                let canonical_mountpoint = match self.mountpoint.canonicalize() {
-                    Ok(path) => path,
-                    Err(e) => {
-                        error!("Could not canonicalize mountpoint {:?}: {}", self.mountpoint, e);
-                        self.mountpoint.clone()
+                        // Security: If we cannot canonicalize, we cannot validate the path safely
+                        // Two cases: 
+                        // 1. Path doesn't exist (already unmounted) - safe to skip
+                        // 2. Path is malicious/invalid - unsafe to attempt unmount
+                        // For safety, skip this mount and log a warning
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            debug!("Mount {:?} not found (likely already unmounted)", mount.target);
+                            continue;
+                        } else {
+                            error!("Cannot canonicalize {:?}: {}. Skipping for safety.", mount.target, e);
+                            errors.push(e);
+                            continue;
+                        }
                     }
                 };
                 
@@ -210,32 +224,38 @@ impl BindMountManager {
 
         if ret != 0 {
             let err = Error::last_os_error();
-            // NOTE: Behavior change from previous implementation
-            // EINVAL means target is not a mountpoint, ENOENT means target doesn't exist
-            // Both indicate the mount is already unmounted or never existed
-            // We treat these as success since the desired state (unmounted) is achieved
-            if err.raw_os_error() == Some(libc::EINVAL)
-                || err.raw_os_error() == Some(libc::ENOENT)
-            {
-                debug!("Mount {:?} already unmounted or invalid", target);
-                return Ok(());
-            }
             
-            // If busy, try lazy unmount as last resort
-            // Warning: this can have side effects on bind mounts
-            if err.raw_os_error() == Some(libc::EBUSY) {
-                info!("Mount {:?} is busy, attempting lazy unmount", target);
-                let ret2 = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
-                if ret2 != 0 {
-                    let err2 = Error::last_os_error();
-                    error!("Failed to lazy unmount {:?}: {}", target, err2);
-                    return Err(err2);
+            // Handle specific error codes
+            match err.raw_os_error() {
+                // ENOENT: Mount target doesn't exist - already unmounted
+                Some(libc::ENOENT) => {
+                    debug!("Mount {:?} not found (already unmounted)", target);
+                    return Ok(());
                 }
-                return Ok(());
+                // EINVAL: Most commonly means target is not a mount point
+                // However, it can also indicate other issues, so log more verbosely
+                Some(libc::EINVAL) => {
+                    debug!("Mount {:?} is not a mount point (likely already unmounted)", target);
+                    return Ok(());
+                }
+                // EBUSY: Mount is in use, try lazy unmount as last resort
+                Some(libc::EBUSY) => {
+                    info!("Mount {:?} is busy, attempting lazy unmount", target);
+                    let ret2 = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+                    if ret2 != 0 {
+                        let err2 = Error::last_os_error();
+                        error!("Failed to lazy unmount {:?}: {}", target, err2);
+                        return Err(err2);
+                    }
+                    return Ok(());
+                }
+                // For any other error, fail loudly
+                _ => {
+                    error!("Failed to unmount {:?}: {} (errno: {:?})", 
+                           target, err, err.raw_os_error());
+                    return Err(err);
+                }
             }
-            
-            error!("Failed to unmount {:?}: {}", target, err);
-            return Err(err);
         }
 
         Ok(())
