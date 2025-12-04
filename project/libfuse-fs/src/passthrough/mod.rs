@@ -637,6 +637,36 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         Ok(())
     }
 
+    /// Cleanup bind mounts explicitly
+    pub async fn cleanup_bind_mounts(&self) -> Result<()> {
+        use std::process::Command;
+        
+        let bind_mount_targets = self.bind_mount_targets.read().await;
+        
+        for target_path in bind_mount_targets.iter().rev() {
+            debug!("Unmounting bind mount: {:?}", target_path);
+            
+            let status = Command::new("sudo")
+                .arg("umount")
+                .arg(target_path.as_os_str())
+                .status();
+            
+            match status {
+                Ok(status) if status.success() => {
+                    debug!("Successfully unmounted {:?}", target_path);
+                }
+                Ok(status) => {
+                    warn!("Failed to unmount {:?}: exit code {:?}", target_path, status.code());
+                }
+                Err(e) => {
+                    warn!("Failed to execute umount for {:?}: {}", target_path, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Get the list of file descriptors which should be reserved across live upgrade.
     pub fn keep_fds(&self) -> Vec<RawFd> {
         vec![self.proc_self_fd.as_raw_fd()]
@@ -1296,35 +1326,11 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
 impl<S: BitmapSlice + Send + Sync> Drop for PassthroughFs<S> {
     fn drop(&mut self) {
-        // Cleanup bind mounts synchronously
-        let bind_mount_targets = match self.bind_mount_targets.try_write() {
-            Ok(guard) => guard,
-            Err(_) => {
-                error!("Failed to acquire lock on bind_mount_targets during drop");
-                return;
-            }
-        };
-        
-        for target_path in bind_mount_targets.iter().rev() {
-            debug!("Unmounting bind mount: {:?}", target_path);
-            
-            let status = std::process::Command::new("sudo")
-                .arg("umount")
-                .arg(target_path.as_os_str())
-                .status();
-            
-            match status {
-                Ok(status) if status.success() => {
-                    debug!("Successfully unmounted {:?}", target_path);
-                }
-                Ok(status) => {
-                    warn!("Failed to unmount {:?}: exit code {:?}", target_path, status.code());
-                }
-                Err(e) => {
-                    warn!("Failed to execute umount for {:?}: {}", target_path, e);
-                }
-            }
-        }
+        // Note: We don't automatically cleanup bind mounts in Drop because:
+        // 1. Drop is called when PassthroughFs goes out of scope, even if it's wrapped in Arc
+        // 2. Bind mounts need to persist as long as the filesystem is mounted
+        // 3. Cleanup should be done explicitly via cleanup_bind_mounts() or on process exit
+        debug!("PassthroughFs drop called");
     }
 }
 
