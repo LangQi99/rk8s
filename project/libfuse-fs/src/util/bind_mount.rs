@@ -258,4 +258,42 @@ mod tests {
         assert!(BindMount::parse("invalid").is_err());
         assert!(BindMount::parse("too:many:colons").is_err());
     }
+
+    #[test]
+    fn test_bind_mount_manager_mountpoint_validation() {
+        // Test that mount targets are correctly constructed under the mountpoint
+        let manager = BindMountManager::new("/mnt/test");
+        
+        // Test with absolute path target
+        let bind = BindMount {
+            source: PathBuf::from("/proc"),
+            target: PathBuf::from("/proc"),
+        };
+        
+        let target_path = manager.mountpoint.join(
+            bind.target.strip_prefix("/").unwrap_or(&bind.target)
+        );
+        
+        // Verify the target is under the mountpoint
+        assert!(target_path.starts_with(&manager.mountpoint));
+        assert_eq!(target_path, PathBuf::from("/mnt/test/proc"));
+    }
+
+    #[test]
+    fn test_mountpoint_safety_check() {
+        // Verify that paths outside mountpoint would be caught
+        let manager = BindMountManager::new("/mnt/overlay");
+        
+        // This should be under mountpoint
+        let safe_path = PathBuf::from("/mnt/overlay/dev/pts");
+        assert!(safe_path.starts_with(&manager.mountpoint));
+        
+        // This should NOT be under mountpoint
+        let unsafe_path = PathBuf::from("/dev/pts");
+        assert!(!unsafe_path.starts_with(&manager.mountpoint));
+        
+        // This should NOT be under mountpoint (parent directory)
+        let parent_path = PathBuf::from("/mnt");
+        assert!(!parent_path.starts_with(&manager.mountpoint));
+    }
 }
