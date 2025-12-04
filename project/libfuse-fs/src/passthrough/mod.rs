@@ -76,6 +76,7 @@ where
 {
     pub root_dir: P,
     pub mapping: Option<M>,
+    pub bind_mounts: Vec<(String, String)>, // List of (target_path, source_path) tuples
 }
 
 pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
@@ -93,6 +94,11 @@ pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
             .as_ref()
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    }
+    
+    // Convert bind mounts from args
+    for (target, source) in args.bind_mounts {
+        config.bind_mounts.insert(PathBuf::from(target), PathBuf::from(source));
     }
 
     let fs = PassthroughFs::<()>::new(config)?;
@@ -453,6 +459,9 @@ pub struct PassthroughFs<S: BitmapSlice + Send + Sync = ()> {
     handle_cache: Cache<FileUniqueKey, Arc<FileHandle>>,
 
     mmap_chunks: Cache<MmapChunkKey, Arc<RwLock<mmap::MmapCachedValue>>>,
+
+    // Track bind mount target paths that have been mounted (for cleanup)
+    bind_mount_targets: RwLock<Vec<PathBuf>>,
 }
 
 impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
@@ -537,6 +546,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             handle_cache: moka::future::Cache::new(fd_limit),
 
             mmap_chunks: mmap_cache_builder.build(),
+
+            bind_mount_targets: RwLock::new(Vec::new()),
         })
     }
 
@@ -572,6 +583,87 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             )))
             .await;
 
+        // Setup bind mounts
+        self.setup_bind_mounts().await?;
+
+        Ok(())
+    }
+
+    /// Setup bind mounts from configuration
+    async fn setup_bind_mounts(&self) -> Result<()> {
+        use std::process::Command;
+        
+        let mut mounted_targets = self.bind_mount_targets.write().await;
+        
+        for (target, source) in &self.cfg.bind_mounts {
+            // Construct absolute target path under root_dir
+            let target_path = self.cfg.root_dir.join(target);
+            
+            // Create target directory if it doesn't exist
+            if let Err(e) = std::fs::create_dir_all(&target_path) {
+                if e.kind() != io::ErrorKind::AlreadyExists {
+                    error!("Failed to create bind mount target directory {:?}: {}", target_path, e);
+                    return Err(e);
+                }
+            }
+            
+            // Perform bind mount using system mount command with sudo
+            let status = Command::new("sudo")
+                .arg("mount")
+                .arg("--bind")
+                .arg(source.as_os_str())
+                .arg(target_path.as_os_str())
+                .status();
+            
+            match status {
+                Ok(status) if status.success() => {
+                    debug!("Bind mounted {:?} -> {:?}", source, target_path);
+                    mounted_targets.push(target_path.clone());
+                }
+                Ok(status) => {
+                    error!("Bind mount failed with exit code: {:?}", status.code());
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Bind mount failed for {:?} -> {:?}", source, target_path),
+                    ));
+                }
+                Err(e) => {
+                    error!("Failed to execute mount command: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Cleanup bind mounts explicitly
+    pub async fn cleanup_bind_mounts(&self) -> Result<()> {
+        use std::process::Command;
+        
+        let bind_mount_targets = self.bind_mount_targets.read().await;
+        
+        for target_path in bind_mount_targets.iter().rev() {
+            debug!("Unmounting bind mount: {:?}", target_path);
+            
+            let status = Command::new("sudo")
+                .arg("umount")
+                .arg(target_path.as_os_str())
+                .status();
+            
+            match status {
+                Ok(status) if status.success() => {
+                    debug!("Successfully unmounted {:?}", target_path);
+                }
+                Ok(status) => {
+                    warn!("Failed to unmount {:?}: exit code {:?}", target_path, status.code());
+                }
+                Err(e) => {
+                    warn!("Failed to execute umount for {:?}: {}", target_path, e);
+                }
+            }
+        }
+        
         Ok(())
     }
 
@@ -1232,6 +1324,16 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     }
 }
 
+impl<S: BitmapSlice + Send + Sync> Drop for PassthroughFs<S> {
+    fn drop(&mut self) {
+        // Note: We don't automatically cleanup bind mounts in Drop because:
+        // 1. Drop is called when PassthroughFs goes out of scope, even if it's wrapped in Arc
+        // 2. Bind mounts need to persist as long as the filesystem is mounted
+        // 3. Cleanup should be done explicitly via cleanup_bind_mounts() or on process exit
+        debug!("PassthroughFs drop called");
+    }
+}
+
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
@@ -1271,6 +1373,7 @@ mod tests {
         let args = PassthroughArgs {
             root_dir: source_dir.clone(),
             mapping: None::<&str>,
+            bind_mounts: vec![],
         };
         let fs = match super::new_passthroughfs_layer(args).await {
             Ok(fs) => fs,

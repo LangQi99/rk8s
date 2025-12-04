@@ -2724,6 +2724,7 @@ where
     pub mapping: Option<M>,
     pub name: Option<N>,
     pub allow_other: bool,
+    pub bind_mounts: Vec<(String, String)>, // List of (target_path, source_path) for bind mounts
 }
 
 /// Mounts the filesystem using the given parameters and returns the mount handle.
@@ -2756,16 +2757,18 @@ where
         let layer = new_passthroughfs_layer(PassthroughArgs {
             root_dir: lower,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: vec![],
         })
         .await
         .expect("Failed to create lower filesystem layer");
         lower_layers.push(Arc::new(layer));
     }
-    // Create upper layer
+    // Create upper layer with bind mounts
     let upper_layer = Arc::new(
         new_passthroughfs_layer(PassthroughArgs {
             root_dir: args.upperdir,
             mapping: args.mapping.as_ref().map(|m| m.as_ref()),
+            bind_mounts: args.bind_mounts.clone(),
         })
         .await
         .expect("Failed to create upper filesystem layer"),

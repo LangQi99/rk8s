@@ -28,6 +28,10 @@ struct Args {
     mapping: Option<String>,
     #[arg(long)]
     allow_other: bool,
+    /// Bind mount paths in format "target:source" (repeatable)
+    /// Example: --bind "proc:/proc" --bind "sys:/sys"
+    #[arg(long)]
+    bind: Vec<String>,
 }
 
 fn set_log() {
@@ -44,6 +48,21 @@ async fn main() {
     set_log();
     debug!("Starting overlay filesystem with args: {:?}", args);
 
+    // Parse bind mounts from "target:source" format
+    let bind_mounts: Vec<(String, String)> = args
+        .bind
+        .iter()
+        .filter_map(|bind_spec| {
+            let parts: Vec<&str> = bind_spec.splitn(2, ':').collect();
+            if parts.len() == 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                tracing::error!("Invalid bind mount specification: {}", bind_spec);
+                None
+            }
+        })
+        .collect();
+
     let mut mount_handle = mount_fs(OverlayArgs {
         name: None::<String>,
         mountpoint: args.mountpoint,
@@ -52,6 +71,7 @@ async fn main() {
         mapping: args.mapping,
         privileged: args.privileged,
         allow_other: args.allow_other,
+        bind_mounts,
     })
     .await;
 

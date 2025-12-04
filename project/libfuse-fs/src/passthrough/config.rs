@@ -1,6 +1,7 @@
 // Copyright (C) 2020-2022 Alibaba Cloud. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -181,6 +182,10 @@ pub struct Config {
 
     /// UID/GID mapping. Format: `uidmapping=H:T:L[:H2:T2:L2...],gidmapping=H:T:L[:H2:T2:L2...]`
     pub mapping: IdMappings,
+
+    /// Bind mount mappings: Map of target paths (relative to root_dir) to source paths (absolute on host)
+    /// Example: {"proc" => "/proc", "sys" => "/sys"}
+    pub bind_mounts: HashMap<PathBuf, PathBuf>,
 }
 
 impl Default for Config {
@@ -207,6 +212,7 @@ impl Default for Config {
             use_mmap: false,
             max_mmap_size: 1024 * 1024 * 1024,
             mapping: IdMappings::default(),
+            bind_mounts: HashMap::new(),
         }
     }
 }
