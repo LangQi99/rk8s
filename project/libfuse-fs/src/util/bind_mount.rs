@@ -146,6 +146,16 @@ impl BindMountManager {
         // Unmount in reverse order
         while let Some(mut mount) = mounts.pop() {
             if mount.mounted {
+                // Verify the mount point is actually under our mountpoint
+                // This prevents accidentally unmounting host mounts
+                if !mount.target.starts_with(&self.mountpoint) {
+                    error!(
+                        "Skipping unmount of {:?}: not under mountpoint {:?}",
+                        mount.target, self.mountpoint
+                    );
+                    continue;
+                }
+                
                 if let Err(e) = self.do_unmount(&mount.target) {
                     error!("Failed to unmount {:?}: {}", mount.target, e);
                     errors.push(e);
@@ -175,16 +185,35 @@ impl BindMountManager {
         })?)
         .map_err(|e| Error::other(format!("CString error: {}", e)))?;
 
-        let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+        // Try normal unmount first (without MNT_DETACH)
+        // This is safer for bind mounts as it won't affect the source mount
+        let ret = unsafe { libc::umount(target_cstr.as_ptr()) };
 
         if ret != 0 {
             let err = Error::last_os_error();
             // EINVAL or ENOENT might mean it's already unmounted
-            if err.raw_os_error() != Some(libc::EINVAL)
-                && err.raw_os_error() != Some(libc::ENOENT)
+            if err.raw_os_error() == Some(libc::EINVAL)
+                || err.raw_os_error() == Some(libc::ENOENT)
             {
-                return Err(err);
+                debug!("Mount {:?} already unmounted or invalid", target);
+                return Ok(());
             }
+            
+            // If busy, try lazy unmount as last resort
+            // But log a warning since this can have side effects
+            if err.raw_os_error() == Some(libc::EBUSY) {
+                debug!("Mount {:?} is busy, attempting lazy unmount", target);
+                let ret2 = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+                if ret2 != 0 {
+                    let err2 = Error::last_os_error();
+                    error!("Failed to lazy unmount {:?}: {}", target, err2);
+                    return Err(err2);
+                }
+                return Ok(());
+            }
+            
+            error!("Failed to unmount {:?}: {}", target, err);
+            return Err(err);
         }
 
         Ok(())
