@@ -52,6 +52,14 @@ pub struct BindMountManager {
 struct MountPoint {
     target: PathBuf,
     mounted: bool,
+    mount_type: MountType,
+    ptmx_link: Option<PathBuf>, // Track ptmx symlink if created
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MountType {
+    Bind,
+    Devpts,
 }
 
 impl BindMountManager {
@@ -70,34 +78,81 @@ impl BindMountManager {
         for bind in bind_specs {
             let target_path = self.mountpoint.join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
             
-            // Check if source is a file or directory
-            let source_metadata = std::fs::metadata(&bind.source)?;
+            // Special handling for /dev/pts - mount fresh devpts instead of bind mount
+            let is_devpts = bind.source == PathBuf::from("/dev/pts") 
+                || bind.target == PathBuf::from("/dev/pts")
+                || bind.target == PathBuf::from("dev/pts");
             
-            if !target_path.exists() {
-                if source_metadata.is_file() {
-                    // For file bind mounts, create parent directory and an empty file
-                    if let Some(parent) = target_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                        debug!("Created parent directory: {:?}", parent);
-                    }
-                    std::fs::File::create(&target_path)?;
-                    debug!("Created target file: {:?}", target_path);
-                } else {
-                    // For directory bind mounts, create the directory
+            if is_devpts {
+                // Create target directory if it doesn't exist
+                if !target_path.exists() {
                     std::fs::create_dir_all(&target_path)?;
-                    debug!("Created target directory: {:?}", target_path);
+                    debug!("Created devpts target directory: {:?}", target_path);
                 }
-            }
+                
+                // Mount fresh devpts filesystem
+                self.do_mount_devpts(&target_path)?;
+                
+                // Create /dev/ptmx symlink if it doesn't exist
+                let ptmx_link = if let Some(dev_path) = target_path.parent() {
+                    let ptmx_path = dev_path.join("ptmx");
+                    // Only create symlink if ptmx doesn't exist or is not a device node
+                    if !ptmx_path.exists() || !ptmx_path.is_symlink() {
+                        // Create symlink: /dev/ptmx -> /dev/pts/ptmx
+                        if ptmx_path.exists() {
+                            // Remove existing file/link if it exists
+                            let _ = std::fs::remove_file(&ptmx_path);
+                        }
+                        std::os::unix::fs::symlink("pts/ptmx", &ptmx_path)?;
+                        debug!("Created ptmx symlink at {:?}", ptmx_path);
+                        Some(ptmx_path)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                mounts.push(MountPoint {
+                    target: target_path.clone(),
+                    mounted: true,
+                    mount_type: MountType::Devpts,
+                    ptmx_link,
+                });
+                
+                info!("Mounted devpts at {:?}", target_path);
+            } else {
+                // Check if source is a file or directory
+                let source_metadata = std::fs::metadata(&bind.source)?;
+                
+                if !target_path.exists() {
+                    if source_metadata.is_file() {
+                        // For file bind mounts, create parent directory and an empty file
+                        if let Some(parent) = target_path.parent() {
+                            std::fs::create_dir_all(parent)?;
+                            debug!("Created parent directory: {:?}", parent);
+                        }
+                        std::fs::File::create(&target_path)?;
+                        debug!("Created target file: {:?}", target_path);
+                    } else {
+                        // For directory bind mounts, create the directory
+                        std::fs::create_dir_all(&target_path)?;
+                        debug!("Created target directory: {:?}", target_path);
+                    }
+                }
 
-            // Perform the bind mount
-            self.do_mount(&bind.source, &target_path)?;
-            
-            mounts.push(MountPoint {
-                target: target_path.clone(),
-                mounted: true,
-            });
-            
-            info!("Bind mounted {:?} -> {:?}", bind.source, target_path);
+                // Perform the bind mount
+                self.do_mount(&bind.source, &target_path)?;
+                
+                mounts.push(MountPoint {
+                    target: target_path.clone(),
+                    mounted: true,
+                    mount_type: MountType::Bind,
+                    ptmx_link: None,
+                });
+                
+                info!("Bind mounted {:?} -> {:?}", bind.source, target_path);
+            }
         }
 
         Ok(())
@@ -138,6 +193,37 @@ impl BindMountManager {
         Ok(())
     }
 
+    /// Mount a fresh devpts filesystem
+    fn do_mount_devpts(&self, target: &Path) -> Result<()> {
+        use std::ffi::CString;
+
+        let target_cstr = CString::new(target.to_str().ok_or_else(|| {
+            Error::other(format!("Invalid target path: {:?}", target))
+        })?)
+        .map_err(|e| Error::other(format!("CString error: {}", e)))?;
+
+        let fstype = CString::new("devpts").unwrap();
+        let options = CString::new("newinstance,ptmxmode=0666,mode=0620").unwrap();
+
+        let ret = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                target_cstr.as_ptr(),
+                fstype.as_ptr(),
+                0, // No special flags needed for devpts
+                options.as_ptr() as *const libc::c_void,
+            )
+        };
+
+        if ret != 0 {
+            let err = Error::last_os_error();
+            error!("Failed to mount devpts at {:?}: {}", target, err);
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
     /// Unmount all bind mounts
     pub async fn unmount_all(&self) -> Result<()> {
         let mut mounts = self.mounts.lock().await;
@@ -146,7 +232,18 @@ impl BindMountManager {
         // Unmount in reverse order
         while let Some(mut mount) = mounts.pop() {
             if mount.mounted {
-                if let Err(e) = self.do_unmount(&mount.target) {
+                // Remove ptmx symlink if we created it
+                if let Some(ref ptmx_link) = mount.ptmx_link {
+                    if ptmx_link.is_symlink() {
+                        if let Err(e) = std::fs::remove_file(ptmx_link) {
+                            error!("Failed to remove ptmx symlink {:?}: {}", ptmx_link, e);
+                        } else {
+                            debug!("Removed ptmx symlink {:?}", ptmx_link);
+                        }
+                    }
+                }
+                
+                if let Err(e) = self.do_unmount(&mount.target, mount.mount_type) {
                     error!("Failed to unmount {:?}: {}", mount.target, e);
                     errors.push(e);
                 } else {
@@ -167,7 +264,7 @@ impl BindMountManager {
     }
 
     /// Perform the actual unmount using umount(2) syscall
-    fn do_unmount(&self, target: &Path) -> Result<()> {
+    fn do_unmount(&self, target: &Path, mount_type: MountType) -> Result<()> {
         use std::ffi::CString;
 
         let target_cstr = CString::new(target.to_str().ok_or_else(|| {
@@ -175,7 +272,14 @@ impl BindMountManager {
         })?)
         .map_err(|e| Error::other(format!("CString error: {}", e)))?;
 
-        let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+        // For devpts mounts, use regular unmount (not lazy)
+        // For bind mounts, use MNT_DETACH for more reliable cleanup
+        let flags = match mount_type {
+            MountType::Devpts => 0, // Regular unmount
+            MountType::Bind => libc::MNT_DETACH, // Lazy unmount
+        };
+
+        let ret = unsafe { libc::umount2(target_cstr.as_ptr(), flags) };
 
         if ret != 0 {
             let err = Error::last_os_error();
@@ -198,7 +302,13 @@ impl Drop for BindMountManager {
         if let Ok(mut mounts) = mounts {
             while let Some(mount) = mounts.pop() {
                 if mount.mounted {
-                    let _ = self.do_unmount(&mount.target);
+                    // Remove ptmx symlink if we created it
+                    if let Some(ref ptmx_link) = mount.ptmx_link {
+                        if ptmx_link.is_symlink() {
+                            let _ = std::fs::remove_file(ptmx_link);
+                        }
+                    }
+                    let _ = self.do_unmount(&mount.target, mount.mount_type);
                 }
             }
         }
