@@ -207,7 +207,7 @@ For bind mounts, regular `umount()` simply removes the mount point entry, which 
 # Before fix
 sudo mount --bind /dev /mnt/test
 mount | grep devpts  # Shows: devpts on /dev/pts and /mnt/test/pts
-sudo umount2 -l /mnt/test/pts  # Lazy unmount
+sudo umount -l /mnt/test/pts  # Lazy unmount (equivalent to umount2 with MNT_DETACH)
 mount | grep devpts  # Shows: devpts on /dev/pts GONE! 💥
 
 # After fix

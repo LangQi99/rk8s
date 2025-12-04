@@ -9,7 +9,7 @@ This PR fixes a critical issue where unmounting an overlayfs with bind mounts to
 ### Symptoms
 After running `overlayfs_example` with bind mounts and then unmounting (Ctrl+C):
 - `sudo: unable to allocate pty: No such device`
-- `forkpty(3) failed` errors in bash and other programs
+- `forkpty() failed` errors in bash and other programs
 - Host system `/dev/pts` is unmounted
 - Manual recovery required: `sudo mount -t devpts devpts /dev/pts`
 

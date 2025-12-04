@@ -138,6 +138,27 @@ impl BindMountManager {
         Ok(())
     }
 
+    /// Validates and canonicalizes a mount target path
+    /// Returns Ok(canonical_path) if valid, or Err if should be skipped
+    fn validate_mount_target(target: &Path) -> std::result::Result<PathBuf, Option<Error>> {
+        match target.canonicalize() {
+            Ok(canonical) => Ok(canonical),
+            Err(e) => {
+                // Security: If we cannot canonicalize, we cannot validate the path safely
+                // Two cases: 
+                // 1. Path doesn't exist (already unmounted) - safe to skip, return Err(None)
+                // 2. Path is malicious/invalid - unsafe to attempt unmount, return Err(Some(error))
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    debug!("Mount {:?} not found (likely already unmounted)", target);
+                    Err(None) // Skip without error
+                } else {
+                    error!("Cannot canonicalize {:?}: {}. Skipping for safety.", target, e);
+                    Err(Some(e)) // Skip with error
+                }
+            }
+        }
+    }
+
     /// Unmount all bind mounts
     pub async fn unmount_all(&self) -> Result<()> {
         let mut mounts = self.mounts.lock().await;
@@ -161,24 +182,13 @@ impl BindMountManager {
             if mount.mounted {
                 // Verify the mount point is actually under our mountpoint
                 // This prevents accidentally unmounting host mounts
-                // Use canonicalize to resolve any symlinks or .. components
-                let canonical_target = match mount.target.canonicalize() {
+                let canonical_target = match Self::validate_mount_target(&mount.target) {
                     Ok(path) => path,
-                    Err(e) => {
-                        // Security: If we cannot canonicalize, we cannot validate the path safely
-                        // Two cases: 
-                        // 1. Path doesn't exist (already unmounted) - safe to skip
-                        // 2. Path is malicious/invalid - unsafe to attempt unmount
-                        // For safety, skip this mount and log a warning
-                        if e.kind() == std::io::ErrorKind::NotFound {
-                            debug!("Mount {:?} not found (likely already unmounted)", mount.target);
-                            continue;
-                        } else {
-                            error!("Cannot canonicalize {:?}: {}. Skipping for safety.", mount.target, e);
-                            errors.push(e);
-                            continue;
-                        }
+                    Err(Some(e)) => {
+                        errors.push(e);
+                        continue;
                     }
+                    Err(None) => continue, // Already unmounted, skip
                 };
                 
                 if !canonical_target.starts_with(&canonical_mountpoint) {
@@ -241,11 +251,11 @@ impl BindMountManager {
                 // EBUSY: Mount is in use, try lazy unmount as last resort
                 Some(libc::EBUSY) => {
                     info!("Mount {:?} is busy, attempting lazy unmount", target);
-                    let ret2 = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
-                    if ret2 != 0 {
-                        let err2 = Error::last_os_error();
-                        error!("Failed to lazy unmount {:?}: {}", target, err2);
-                        return Err(err2);
+                    let lazy_unmount_ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+                    if lazy_unmount_ret != 0 {
+                        let lazy_unmount_err = Error::last_os_error();
+                        error!("Failed to lazy unmount {:?}: {}", target, lazy_unmount_err);
+                        return Err(lazy_unmount_err);
                     }
                     return Ok(());
                 }
