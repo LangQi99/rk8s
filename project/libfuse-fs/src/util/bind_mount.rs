@@ -68,11 +68,13 @@ impl BindMountManager {
         let mut mounts = self.mounts.lock().await;
 
         for bind in bind_specs {
-            let target_path = self.mountpoint.join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
-            
+            let target_path = self
+                .mountpoint
+                .join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
+
             // Check if source is a file or directory
             let source_metadata = std::fs::metadata(&bind.source)?;
-            
+
             if !target_path.exists() {
                 if source_metadata.is_file() {
                     // For file bind mounts, create parent directory and an empty file
@@ -91,12 +93,12 @@ impl BindMountManager {
 
             // Perform the bind mount
             self.do_mount(&bind.source, &target_path)?;
-            
+
             mounts.push(MountPoint {
                 target: target_path.clone(),
                 mounted: true,
             });
-            
+
             info!("Bind mounted {:?} -> {:?}", bind.source, target_path);
         }
 
@@ -107,14 +109,18 @@ impl BindMountManager {
     fn do_mount(&self, source: &Path, target: &Path) -> Result<()> {
         use std::ffi::CString;
 
-        let source_cstr = CString::new(source.to_str().ok_or_else(|| {
-            Error::other(format!("Invalid source path: {:?}", source))
-        })?)
+        let source_cstr = CString::new(
+            source
+                .to_str()
+                .ok_or_else(|| Error::other(format!("Invalid source path: {:?}", source)))?,
+        )
         .map_err(|e| Error::other(format!("CString error: {}", e)))?;
 
-        let target_cstr = CString::new(target.to_str().ok_or_else(|| {
-            Error::other(format!("Invalid target path: {:?}", target))
-        })?)
+        let target_cstr = CString::new(
+            target
+                .to_str()
+                .ok_or_else(|| Error::other(format!("Invalid target path: {:?}", target)))?,
+        )
         .map_err(|e| Error::other(format!("CString error: {}", e)))?;
 
         let fstype = CString::new("none").unwrap();
@@ -167,27 +173,56 @@ impl BindMountManager {
     }
 
     /// Perform the actual unmount using umount(2) syscall
+    ///
+    /// This method first attempts a normal unmount without MNT_DETACH to avoid
+    /// issues with pseudo-filesystems like /dev/pts. If the normal unmount fails
+    /// because the mount is busy (EBUSY), it falls back to lazy unmount with MNT_DETACH.
     fn do_unmount(&self, target: &Path) -> Result<()> {
         use std::ffi::CString;
 
-        let target_cstr = CString::new(target.to_str().ok_or_else(|| {
-            Error::other(format!("Invalid target path: {:?}", target))
-        })?)
+        let target_cstr = CString::new(
+            target
+                .to_str()
+                .ok_or_else(|| Error::other(format!("Invalid target path: {:?}", target)))?,
+        )
         .map_err(|e| Error::other(format!("CString error: {}", e)))?;
 
-        let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+        // First, try a normal unmount without MNT_DETACH
+        // This is safer for pseudo-filesystems like /dev/pts
+        let ret = unsafe { libc::umount2(target_cstr.as_ptr(), 0) };
 
-        if ret != 0 {
-            let err = Error::last_os_error();
-            // EINVAL or ENOENT might mean it's already unmounted
-            if err.raw_os_error() != Some(libc::EINVAL)
-                && err.raw_os_error() != Some(libc::ENOENT)
-            {
-                return Err(err);
-            }
+        if ret == 0 {
+            debug!("Successfully unmounted {:?} with normal unmount", target);
+            return Ok(());
         }
 
-        Ok(())
+        let err = Error::last_os_error();
+
+        // If already unmounted, that's fine
+        if err.raw_os_error() == Some(libc::EINVAL) || err.raw_os_error() == Some(libc::ENOENT) {
+            return Ok(());
+        }
+
+        // If the mount is busy, try lazy unmount as fallback
+        if err.raw_os_error() == Some(libc::EBUSY) {
+            debug!("Mount {:?} is busy, attempting lazy unmount", target);
+            let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
+
+            if ret != 0 {
+                let err = Error::last_os_error();
+                // EINVAL or ENOENT might mean it's already unmounted
+                if err.raw_os_error() != Some(libc::EINVAL)
+                    && err.raw_os_error() != Some(libc::ENOENT)
+                {
+                    return Err(err);
+                }
+            }
+            debug!("Successfully unmounted {:?} with lazy unmount", target);
+            return Ok(());
+        }
+
+        // For other errors, return the error
+        Err(err)
     }
 }
 

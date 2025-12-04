@@ -7,7 +7,7 @@ use clap::Parser;
 use libfuse_fs::overlayfs::{OverlayArgs, mount_fs};
 use libfuse_fs::util::bind_mount::{BindMount, BindMountManager};
 use tokio::signal;
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "OverlayFS example for integration tests")]
@@ -54,7 +54,7 @@ async fn main() {
         .iter()
         .map(|s| BindMount::parse(s))
         .collect();
-    
+
     let bind_specs = match bind_specs {
         Ok(specs) => specs,
         Err(e) => {
