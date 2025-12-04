@@ -197,23 +197,23 @@ impl BindMountManager {
         }
 
         let err = Error::last_os_error();
+        let err_code = err.raw_os_error();
 
         // If already unmounted, that's fine
-        if err.raw_os_error() == Some(libc::EINVAL) || err.raw_os_error() == Some(libc::ENOENT) {
+        if err_code == Some(libc::EINVAL) || err_code == Some(libc::ENOENT) {
             return Ok(());
         }
 
         // If the mount is busy, try lazy unmount as fallback
-        if err.raw_os_error() == Some(libc::EBUSY) {
+        if err_code == Some(libc::EBUSY) {
             debug!("Mount {:?} is busy, attempting lazy unmount", target);
             let ret = unsafe { libc::umount2(target_cstr.as_ptr(), libc::MNT_DETACH) };
 
             if ret != 0 {
                 let lazy_err = Error::last_os_error();
+                let lazy_err_code = lazy_err.raw_os_error();
                 // EINVAL or ENOENT might mean it's already unmounted
-                if lazy_err.raw_os_error() != Some(libc::EINVAL)
-                    && lazy_err.raw_os_error() != Some(libc::ENOENT)
-                {
+                if lazy_err_code != Some(libc::EINVAL) && lazy_err_code != Some(libc::ENOENT) {
                     return Err(lazy_err);
                 }
             }
