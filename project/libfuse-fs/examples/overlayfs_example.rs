@@ -105,10 +105,13 @@ async fn main() {
             if let Err(e) = bind_manager.unmount_all().await {
                 error!("Failed to unmount bind mounts: {}", e);
             }
+            info!("Bind mounts unmounted.");
+
             // Then unmount the overlay filesystem
             if let Err(e) = mount_handle.unmount().await {
                 error!("Failed to unmount overlay filesystem: {}", e);
             }
+            info!("Overlay filesystem unmounted.");
         }
         _ = async {
             use tokio::signal::unix::{signal, SignalKind};
@@ -120,10 +123,17 @@ async fn main() {
             if let Err(e) = bind_manager.unmount_all().await {
                 error!("Failed to unmount bind mounts: {}", e);
             }
+            info!("Bind mounts unmounted.");
+
             // Then unmount the overlay filesystem
             if let Err(e) = mount_handle.unmount().await {
                 error!("Failed to unmount overlay filesystem: {}", e);
             }
+            info!("Overlay filesystem unmounted.");
         }
     }
+
+    info!("Exiting process.");
+    // Force exit to ensure all threads are killed
+    std::process::exit(0);
 }
