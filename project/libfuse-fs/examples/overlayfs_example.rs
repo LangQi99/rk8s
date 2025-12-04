@@ -79,6 +79,11 @@ async fn main() {
 
     // Mount bind mounts after the overlay filesystem is mounted
     if !bind_specs.is_empty() {
+        info!("Cleaning up any existing bind mounts from previous runs...");
+        if let Err(e) = bind_manager.cleanup_existing_mounts(&bind_specs).await {
+            error!("Failed to cleanup existing mounts: {}", e);
+        }
+        
         info!("Mounting {} bind mount(s)", bind_specs.len());
         if let Err(e) = bind_manager.mount_all(&bind_specs).await {
             error!("Failed to mount bind mounts: {}", e);

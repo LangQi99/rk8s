@@ -63,12 +63,56 @@ impl BindMountManager {
         }
     }
 
+    /// Check if a path is currently mounted
+    fn is_mounted(&self, path: &Path) -> bool {
+        use std::fs::read_to_string;
+        
+        if let Ok(mounts) = read_to_string("/proc/mounts") {
+            let path_str = path.to_string_lossy();
+            for line in mounts.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 && parts[1] == path_str {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Clean up any existing mounts at the target paths before mounting
+    /// This ensures we start with a clean state even if previous run didn't clean up properly
+    pub async fn cleanup_existing_mounts(&self, bind_specs: &[BindMount]) -> Result<()> {
+        debug!("Checking for existing mounts to clean up...");
+        
+        for bind in bind_specs {
+            let target_path = self.mountpoint.join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
+            
+            if self.is_mounted(&target_path) {
+                info!("Found existing mount at {:?}, cleaning up...", target_path);
+                if let Err(e) = self.do_unmount(&target_path) {
+                    // Log but don't fail - we'll try to mount anyway
+                    error!("Failed to cleanup existing mount {:?}: {}", target_path, e);
+                } else {
+                    info!("Cleaned up existing mount at {:?}", target_path);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
     /// Mount all bind mounts
     pub async fn mount_all(&self, bind_specs: &[BindMount]) -> Result<()> {
         let mut mounts = self.mounts.lock().await;
 
         for bind in bind_specs {
             let target_path = self.mountpoint.join(bind.target.strip_prefix("/").unwrap_or(&bind.target));
+            
+            // Check if already mounted (skip if so)
+            if self.is_mounted(&target_path) {
+                info!("Target {:?} is already mounted, skipping", target_path);
+                continue;
+            }
             
             // Check if source is a file or directory
             let source_metadata = std::fs::metadata(&bind.source)?;
