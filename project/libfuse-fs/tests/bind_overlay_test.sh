@@ -53,7 +53,7 @@ trap cleanup EXIT INT TERM
 
 # Create test directories
 mkdir -p "$UPPER_DIR" "$LOWER_DIR" "$MOUNT_POINT" "$WORK_DIR"
-mkdir -p "$MOUNT_POINT/proc" "$MOUNT_POINT/sys" "$MOUNT_POINT/dev" "$MOUNT_POINT/dev/pts"
+# Don't create subdirectories - they will be created by bind mount manager
 
 # Create some test files in lower layer
 echo "test content" > "$LOWER_DIR/test.txt"
@@ -85,7 +85,7 @@ echo -e "${YELLOW}Starting OverlayFS with bind mounts...${NC}"
     --bind "dev:/dev" \
     --bind "dev/pts:/dev/pts" \
     --privileged \
-    --allow_other &
+    --allow-other &
 
 FS_PID=$!
 echo "Filesystem PID: $FS_PID"

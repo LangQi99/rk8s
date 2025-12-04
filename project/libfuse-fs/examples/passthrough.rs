@@ -126,7 +126,22 @@ async fn main() {
             }
         },
         _ = signal::ctrl_c() => {
-            info!("Received Ctrl+C signal, cleaning up...");
+            info!("Received SIGINT signal, cleaning up...");
+            // Unmount bind mounts first
+            if let Err(e) = bind_manager.unmount_all().await {
+                error!("Failed to unmount bind mounts: {}", e);
+            }
+            // Then unmount the passthrough filesystem
+            if let Err(e) = mount_handle.unmount().await {
+                error!("Failed to unmount passthrough filesystem: {}", e);
+            }
+        }
+        _ = async {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term = signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
+            term.recv().await
+        } => {
+            info!("Received SIGTERM signal, cleaning up...");
             // Unmount bind mounts first
             if let Err(e) = bind_manager.unmount_all().await {
                 error!("Failed to unmount bind mounts: {}", e);
