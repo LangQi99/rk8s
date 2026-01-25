@@ -175,23 +175,24 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
         use std::os::unix::ffi::OsStrExt;
         let path_cstr =
             path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
-        // Use fstatat on Mac
-        // Note: macOS stat64 is deprecated but we need to match struct. libc::stat is available.
-        // We'll use libc::stat and cast/convert?
-        // Actually libc::stat64 exists on Mac.
+
         #[cfg(target_os = "linux")]
         let mut st = MaybeUninit::<libc::stat64>::zeroed();
         #[cfg(target_os = "macos")]
         let mut st = MaybeUninit::<libc::stat>::zeroed();
-        // Since we are using dirfd (dir.as_raw_fd()) + path, we should use fstatat
-        // fstatat(fd, path, buf, flags)
-        let res = unsafe {
-            libc::fstatat(
-                dir.as_raw_fd(),
-                path_cstr.as_ptr(),
-                st.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
+
+        let bytes = path_cstr.to_bytes();
+        let res = if bytes.is_empty() {
+            unsafe { libc::fstat(dir.as_raw_fd(), st.as_mut_ptr()) }
+        } else {
+            unsafe {
+                libc::fstatat(
+                    dir.as_raw_fd(),
+                    path_cstr.as_ptr(),
+                    st.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            }
         };
         if res == 0 {
             let st = unsafe { st.assume_init() };
