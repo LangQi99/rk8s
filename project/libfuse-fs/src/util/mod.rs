@@ -104,6 +104,14 @@ pub fn filetype_from_mode(st_mode: u32) -> FileType {
     if st_mode == (libc::S_IFSOCK as u32) {
         return FileType::Socket;
     }
+    // Handle whiteout files on macOS (0xE000 / 57344)
+    // rfuse3 doesn't seem to have a specific Whiteout variant exposed or we don't have it imported.
+    // Treating as regular file or simply not panicking.
+    // Ideally we should filter these out if they are not real files, or map to closest.
+    #[cfg(target_os = "macos")]
+    if st_mode == 0xE000 {
+        return FileType::RegularFile;
+    }
     error!("wrong st mode : {st_mode}");
     unreachable!();
 }
