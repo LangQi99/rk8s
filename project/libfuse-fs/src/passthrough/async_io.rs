@@ -33,7 +33,8 @@ use super::util::{
 };
 use super::{Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::LinuxDirent64};
 #[cfg(target_os = "macos")]
-const O_DIRECT: libc::c_int = 0;
+#[cfg(target_os = "macos")]
+pub const O_DIRECT: libc::c_int = 0;
 #[cfg(target_os = "linux")]
 use libc::O_DIRECT;
 
