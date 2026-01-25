@@ -186,9 +186,11 @@ fi
 # 运行 passthrough 示例
 # 使用正确的命名参数格式
 print_info "启动 PassthroughFS，挂载点: $MOUNT_DIR"
-print_info "命令: cargo run --example passthrough -- --rootdir '$SOURCE_DIR' --mountpoint '$MOUNT_DIR'"
+print_info "命令: RUSTFLAGS=\"-A warnings\" cargo run -q --example passthrough -- \
+    --rootdir '$SOURCE_DIR' \
+    --mountpoint '$MOUNT_DIR' &'"
 # 尝试特权挂载
-cargo run --example passthrough -- \
+env RUSTFLAGS="-A warnings" cargo run -q --example passthrough -- \
     --rootdir "$SOURCE_DIR" \
     --mountpoint "$MOUNT_DIR" &
 
@@ -211,8 +213,60 @@ if check_mount "$MOUNT_DIR" 2>/dev/null; then
     print_info "挂载点内容:"
     ls -la "$MOUNT_DIR" 2>/dev/null | sed 's/^/  /' || print_warn "无法列出挂载点内容，可能需要权限"
     
-    print_info "按 Ctrl+C 停止文件系统..."
-    wait $FUSE_PID
+    # 自动化验证
+    print_info "开始自动化验证..."
+    
+    # 1. 验证文件内容
+    if [ -f "$MOUNT_DIR/test_file.txt" ]; then
+        CONTENT=$(cat "$MOUNT_DIR/test_file.txt")
+        if [ "$CONTENT" == "这是一个测试文件" ]; then
+            print_info "✅ 文件内容验证通过"
+        else
+            print_error "❌ 文件内容验证失败: 期望 '这是一个测试文件', 实际 '$CONTENT'"
+            EXIT_CODE=1
+        fi
+    else
+        print_error "❌ 找不到测试文件 test_file.txt"
+        EXIT_CODE=1
+    fi
+
+    # 2. 验证子目录
+    if [ -d "$MOUNT_DIR/subdir" ]; then
+        if [ -f "$MOUNT_DIR/subdir/nested_file.txt" ]; then
+             print_info "✅ 子目录和嵌套文件验证通过"
+        else
+             print_error "❌ 找不到嵌套文件"
+             EXIT_CODE=1
+        fi
+    else
+        print_error "❌ 找不到子目录"
+        EXIT_CODE=1
+    fi
+
+    # 3. 验证写操作 (如果支持)
+    print_info "尝试写入测试..."
+    if echo "write test" > "$MOUNT_DIR/write_test.txt" 2>/dev/null; then
+        print_info "✅ 写入验证通过"
+        rm "$MOUNT_DIR/write_test.txt"
+    else
+        print_warn "⚠️ 写入失败 (可能是只读挂载，如果是预期则忽略)"
+    fi
+
+    if [ "${EXIT_CODE:-0}" -eq 0 ]; then
+        print_info "🎉 所有自动化验证通过！"
+    else
+        print_error "💥 自动化验证失败"
+    fi
+
+    # 自动清理
+    print_info "验证完成，准备清理..."
+    kill $FUSE_PID 2>/dev/null || true
+    wait $FUSE_PID 2>/dev/null || true
+    
+    # 显式清理
+    cleanup
+    
+    exit ${EXIT_CODE:-0}
 else
     print_error "❌ 挂载失败"
     print_info "调试信息:"
