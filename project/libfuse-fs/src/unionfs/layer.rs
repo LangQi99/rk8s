@@ -60,7 +60,7 @@ pub trait Layer: ObjectSafeFilesystem {
 
         // Try to create whiteout char device with 0/0 device number.
         let dev = libc::makedev(0, 0);
-        let mode = libc::S_IFCHR | 0o777;
+        let mode = (libc::S_IFCHR as u32) | 0o777;
         self.mknod(ctx, ino, name, mode, dev as u32).await
     }
 
@@ -317,8 +317,8 @@ pub(crate) fn is_chardev(st: &FileAttr) -> bool {
 pub(crate) fn is_whiteout(st: &FileAttr) -> bool {
     // A whiteout is created as a character device with 0/0 device number.
     // See ref: https://docs.kernel.org/filesystems/overlayfs.html#whiteouts-and-opaque-directories
-    let major = libc::major(st.rdev.into());
-    let minor = libc::minor(st.rdev.into());
+    let major = libc::major(st.rdev as libc::dev_t);
+    let minor = libc::minor(st.rdev as libc::dev_t);
     is_chardev(st) && major == 0 && minor == 0
 }
 

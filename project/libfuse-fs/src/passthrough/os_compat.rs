@@ -8,8 +8,14 @@ use vm_memory::ByteValued;
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LinuxDirent64 {
+    #[cfg(target_os = "linux")]
     pub d_ino: libc::ino64_t,
+    #[cfg(target_os = "macos")]
+    pub d_ino: libc::ino_t,
+    #[cfg(target_os = "linux")]
     pub d_off: libc::off64_t,
+    #[cfg(target_os = "macos")]
+    pub d_off: libc::off_t,
     pub d_reclen: libc::c_ushort,
     pub d_ty: libc::c_uchar,
 }
