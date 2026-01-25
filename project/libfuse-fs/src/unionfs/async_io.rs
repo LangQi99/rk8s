@@ -880,7 +880,7 @@ impl Filesystem for OverlayFs {
 
         let mut flags: i32 = flags as i32;
         flags |= libc::O_NOFOLLOW;
-        flags &= !libc::O_DIRECT;
+        flags &= !crate::passthrough::async_io::O_DIRECT;
         if self.config.writeback {
             if flags & libc::O_ACCMODE == libc::O_WRONLY {
                 flags &= !libc::O_ACCMODE;

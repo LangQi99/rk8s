@@ -225,7 +225,7 @@ pub trait Layer: ObjectSafeFilesystem {
         _inode: Inode,
         _handle: Option<u64>,
         _mapping: bool,
-    ) -> std::io::Result<(libc::stat64, Duration)> {
+    ) -> std::io::Result<(crate::passthrough::util::stat64, Duration)> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
     }
 }
@@ -302,7 +302,7 @@ impl Layer for PassthroughFs {
         inode: Inode,
         handle: Option<u64>,
         mapping: bool,
-    ) -> std::io::Result<(libc::stat64, Duration)> {
+    ) -> std::io::Result<(crate::passthrough::util::stat64, Duration)> {
         PassthroughFs::do_getattr_inner(self, inode, handle, mapping).await
     }
 }

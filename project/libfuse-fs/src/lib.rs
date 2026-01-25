@@ -2,10 +2,10 @@
 // extern crate log;
 
 pub mod context;
-// pub mod overlayfs;
+pub mod overlayfs;
 pub mod passthrough;
 mod server;
-// pub mod unionfs;
+pub mod unionfs;
 pub mod util;
 
 // Test utilities (only compiled during tests)
