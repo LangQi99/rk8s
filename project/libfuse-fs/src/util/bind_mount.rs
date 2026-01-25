@@ -106,6 +106,7 @@ impl BindMountManager {
     }
 
     /// Perform the actual bind mount using mount(2) syscall
+    #[cfg(target_os = "linux")]
     fn do_mount(&self, source: &Path, target: &Path) -> Result<()> {
         use std::ffi::CString;
 
@@ -165,6 +166,12 @@ impl BindMountManager {
         Ok(())
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn do_mount(&self, _source: &Path, _target: &Path) -> Result<()> {
+        // Bind mounts are not supported on non-Linux platforms yet
+        Ok(())
+    }
+
     /// Unmount all bind mounts
     pub async fn unmount_all(&self) -> Result<()> {
         let mut mounts = self.mounts.lock().await;
@@ -194,6 +201,7 @@ impl BindMountManager {
     }
 
     /// Perform the actual unmount using umount(2) syscall
+    #[cfg(target_os = "linux")]
     fn do_unmount(&self, target: &Path) -> Result<()> {
         use std::ffi::CString;
 
@@ -215,6 +223,11 @@ impl BindMountManager {
             }
         }
 
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn do_unmount(&self, _target: &Path) -> Result<()> {
         Ok(())
     }
 }

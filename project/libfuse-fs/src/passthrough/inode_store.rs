@@ -11,7 +11,10 @@ use super::{Inode, InodeData, InodeHandle};
 #[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Debug, Hash)]
 /// Identify an inode in `PassthroughFs` by `InodeId`.
 pub struct InodeId {
+    #[cfg(target_os = "linux")]
     pub ino: libc::ino64_t,
+    #[cfg(target_os = "macos")]
+    pub ino: libc::ino_t,
     pub dev: libc::dev_t,
     pub mnt: u64,
 }
@@ -78,8 +81,7 @@ impl InodeStore {
         // if let Some(old_data) = self.data.insert(data.inode, data.clone()) {
         //     warn!(
         //         "overwriting `data` entry for inode {}. Old id: {:?}, new id: {:?}",
-        //         data.inode,
-        //         old_data.id,
+        //         data.id,
         //         data.id
         //     );
         // }
