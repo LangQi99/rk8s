@@ -49,7 +49,7 @@ use vm_memory::bitmap::BitmapSlice;
 
 use nix::sys::resource::{Resource, getrlimit};
 
-mod async_io;
+pub mod async_io;
 mod config;
 mod file_handle;
 mod inode_store;
@@ -58,7 +58,7 @@ mod mount_fd;
 pub mod newlogfs;
 mod os_compat;
 mod statx;
-mod util;
+pub mod util;
 
 /// Current directory
 pub const CURRENT_DIR_CSTR: &[u8] = b".\0";
