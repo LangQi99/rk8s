@@ -33,11 +33,16 @@ print_error() {
 }
 
 # 清理函数
+# 清理函数
 cleanup() {
     print_info "正在清理..."
-    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+    if check_mount "$MOUNT_DIR" 2>/dev/null; then
         print_info "卸载 $MOUNT_DIR"
-        fusermount3 -u "$MOUNT_DIR" || sudo umount "$MOUNT_DIR" || true
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            umount "$MOUNT_DIR" || sudo umount "$MOUNT_DIR" || true
+        else
+            fusermount3 -u "$MOUNT_DIR" || sudo umount "$MOUNT_DIR" || true
+        fi
     fi
     
     # 等待卸载完成
@@ -53,6 +58,16 @@ cleanup() {
                 rmdir "$MOUNT_DIR" 2>/dev/null || rm -rf "$MOUNT_DIR" 2>/dev/null || true
             fi
         }
+    fi
+}
+
+# 挂载检查函数
+check_mount() {
+    local mnt=$1
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        mount | grep -q "$mnt"
+    else
+        mountpoint -q "$mnt"
     fi
 }
 
@@ -77,26 +92,26 @@ CUSTOM_SOURCE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -s|--source)
-            CUSTOM_SOURCE="$2"
-            shift 2
-            ;;
+        CUSTOM_SOURCE="$2"
+        shift 2
+        ;;
         -l|--log-level)
-            LOG_LEVEL="$2"
-            shift 2
-            ;;
+        LOG_LEVEL="$2"
+        shift 2
+        ;;
         -n|--name)
-            FS_NAME="$2"
-            shift 2
-            ;;
+        FS_NAME="$2"
+        shift 2
+        ;;
         -h|--help)
-            usage
-            exit 0
-            ;;
+        usage
+        exit 0
+        ;;
         *)
-            print_error "未知选项: $1"
-            usage
-            exit 1
-            ;;
+        print_error "未知选项: $1"
+        usage
+        exit 1
+        ;;
     esac
 done
 
@@ -150,20 +165,22 @@ fi
 print_info "编译并运行 PassthroughFS 示例..."
 cd "$PROJECT_DIR"
 
-# 检查并加载 FUSE 模块
-if ! lsmod | grep -q fuse; then
-    print_info "正在加载 FUSE 模块..."
-    if sudo modprobe fuse 2>/dev/null; then
-        print_info "✅ FUSE 模块已加载"
-    else
-        print_warn "⚠️ 无法加载 FUSE 模块，可能需要手动处理"
+# 检查并加载 FUSE 模块 (仅 Linux)
+if [[ "$OSTYPE" != "darwin"* ]]; then
+    if ! lsmod | grep -q fuse; then
+        print_info "正在加载 FUSE 模块..."
+        if sudo modprobe fuse 2>/dev/null; then
+            print_info "✅ FUSE 模块已加载"
+        else
+            print_warn "⚠️ 无法加载 FUSE 模块，可能需要手动处理"
+        fi
     fi
-fi
-
-# 检查 /etc/fuse.conf 是否允许 user_allow_other
-if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
-    print_warn "注意：/etc/fuse.conf 中未启用 user_allow_other，可能需要 sudo 权限"
-    print_warn "建议运行: echo 'user_allow_other' | sudo tee -a /etc/fuse.conf"
+    
+    # 检查 /etc/fuse.conf 是否允许 user_allow_other
+    if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
+        print_warn "注意：/etc/fuse.conf 中未启用 user_allow_other，可能需要 sudo 权限"
+        print_warn "建议运行: echo 'user_allow_other' | sudo tee -a /etc/fuse.conf"
+    fi
 fi
 
 # 运行 passthrough 示例
@@ -182,14 +199,14 @@ print_info "PassthroughFS 进程 ID: $FUSE_PID"
 print_info "等待挂载完成..."
 for i in {1..10}; do
     sleep 1
-    if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+    if check_mount "$MOUNT_DIR" 2>/dev/null; then
         break
     fi
     print_info "等待挂载... ($i/10)"
 done
 
 # 检查挂载是否成功
-if mountpoint -q "$MOUNT_DIR" 2>/dev/null; then
+if check_mount "$MOUNT_DIR" 2>/dev/null; then
     print_info "✅ 挂载成功！可以访问 $MOUNT_DIR"
     print_info "挂载点内容:"
     ls -la "$MOUNT_DIR" 2>/dev/null | sed 's/^/  /' || print_warn "无法列出挂载点内容，可能需要权限"
@@ -202,8 +219,13 @@ else
     print_info "  挂载点: $MOUNT_DIR"
     print_info "  源目录: $SOURCE_DIR"
     print_info "  进程状态: $(ps -p $FUSE_PID -o pid,ppid,state,cmd 2>/dev/null || echo '进程已退出')"
-    print_info "  挂载检查: $(mountpoint "$MOUNT_DIR" 2>&1 || echo '不是挂载点')"
-    print_info "  FUSE 模块: $(lsmod | grep fuse || echo 'FUSE 模块未加载')"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        print_info "  挂载检查: $(mount | grep "$MOUNT_DIR" || echo '不是挂载点')"
+        print_info "  FUSE 模块: (macOS fuse)"
+    else
+        print_info "  挂载检查: $(mountpoint "$MOUNT_DIR" 2>&1 || echo '不是挂载点')"
+        print_info "  FUSE 模块: $(lsmod | grep fuse || echo 'FUSE 模块未加载')"
+    fi
     
     # 检查进程是否还在运行
     if kill -0 $FUSE_PID 2>/dev/null; then
