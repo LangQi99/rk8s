@@ -26,9 +26,16 @@ use crate::{
     util::{convert_stat64_to_file_attr, filetype_from_mode},
 };
 
-use super::{
-    Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::LinuxDirent64, util::*,
+use super::ebadf;
+use super::util::{
+    self, AT_EMPTY_PATH, SLASH_ASCII, einval, enosys, is_safe_inode, osstr_to_cstr, set_creds,
+    stat_fd, stat64,
 };
+use super::{Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::LinuxDirent64};
+#[cfg(target_os = "macos")]
+const O_DIRECT: libc::c_int = 0;
+#[cfg(target_os = "linux")]
+use libc::O_DIRECT;
 
 impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     async fn open_inode(&self, inode: Inode, flags: i32) -> io::Result<File> {
@@ -37,8 +44,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             Err(ebadf())
         } else {
             let mut new_flags = self.get_writeback_open_flags(flags).await;
-            if !self.cfg.allow_direct_io && flags & libc::O_DIRECT != 0 {
-                new_flags &= !libc::O_DIRECT;
+            if !self.cfg.allow_direct_io && flags & O_DIRECT != 0 {
+                new_flags &= !O_DIRECT;
             }
             data.open_file(new_flags | libc::O_CLOEXEC, &self.proc_self_fd)
         }
@@ -83,15 +90,20 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         // Allocate buffer; pay attention to alignment.
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
-        // Safe because this doesn't modify any memory and we check the return value.
+        // Syscall `getdents64` implementation
+        #[cfg(target_os = "linux")]
         let res =
             unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
+        #[cfg(target_os = "macos")]
+        let res = unsafe { libc::lseek(dir.as_raw_fd(), offset as libc::off_t, libc::SEEK_SET) };
+
         if res < 0 {
             return Err(io::Error::last_os_error());
         }
 
         loop {
             // call getdents64 system call
+            #[cfg(target_os = "linux")]
             let result = unsafe {
                 libc::syscall(
                     libc::SYS_getdents64,
@@ -99,6 +111,12 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                     buffer.as_mut_ptr() as *mut LinuxDirent64,
                     BUFFER_SIZE,
                 )
+            };
+            #[cfg(target_os = "macos")]
+            let result = {
+                // Stub for now
+                unsafe { *libc::__error() = libc::ENOSYS };
+                -1
             };
 
             if result == -1 {
@@ -183,14 +201,20 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         // Allocate buffer; pay attention to alignment.
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
-        // Safe because this doesn't modify any memory and we check the return value.
+        // Syscall `getdents64` implementation
+        #[cfg(target_os = "linux")]
         let res =
             unsafe { libc::lseek64(dir.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET) };
+        #[cfg(target_os = "macos")]
+        let res = unsafe { libc::lseek(dir.as_raw_fd(), offset as libc::off_t, libc::SEEK_SET) };
+
         if res < 0 {
             return Err(io::Error::last_os_error());
         }
+
         loop {
             // call getdents64 system call
+            #[cfg(target_os = "linux")]
             let result = unsafe {
                 libc::syscall(
                     libc::SYS_getdents64,
@@ -198,6 +222,12 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                     buffer.as_mut_ptr() as *mut LinuxDirent64,
                     BUFFER_SIZE,
                 )
+            };
+            #[cfg(target_os = "macos")]
+            let result = {
+                // Stub for now
+                unsafe { *libc::__error() = libc::ENOSYS };
+                -1
             };
 
             if result == -1 {
@@ -313,7 +343,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         inode: Inode,
         handle: Option<Handle>,
         mapping: bool,
-    ) -> io::Result<(libc::stat64, Duration)> {
+    ) -> io::Result<(stat64, Duration)> {
         // trace!("FS {} passthrough: do_getattr: before get: inode={}, handle={:?}", self.uuid, inode, handle);
         let data = self.inode_map.get(inode).await.map_err(|e| {
             error!("fuse: do_getattr ino {inode} Not find err {e:?}");
@@ -328,7 +358,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         {
             let hd = self.handle_map.get(handle_id, inode).await?;
             // trace!("FS {} passthrough: do_getattr: before stat_fd", self.uuid);
-            stat_fd(hd.get_file(), None)
+            util::stat_fd(hd.get_file(), None)
         } else {
             // trace!("FS {} passthrough: do_getattr: before stat", self.uuid);
             data.handle.stat()
@@ -352,12 +382,16 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     /// This function serves as the standard entry point for `getattr` requests from the FUSE
     /// kernel module. It always performs ID mapping by calling [`do_getattr_inner`][Self::do_getattr_inner] with
     /// `mapping: true` to ensure clients see attributes from the container's perspective.
-    async fn do_getattr(
-        &self,
-        inode: Inode,
-        handle: Option<Handle>,
-    ) -> io::Result<(libc::stat64, Duration)> {
-        self.do_getattr_inner(inode, handle, true).await
+    async fn do_getattr(&self, inode: Inode, fh: Option<u64>) -> io::Result<(stat64, Duration)> {
+        let inode_data = self.inode_map.get(inode).await?;
+        if let Some(handle) = fh {
+            let hd = self.handle_map.get(handle, inode).await?;
+            let file = hd.get_file();
+            return util::stat_fd(file, None).map(|st| (st, self.cfg.attr_timeout));
+        }
+
+        let file = inode_data.get_file()?;
+        util::stat_fd(&file, None).map(|st| (st, self.cfg.attr_timeout))
     }
 
     /// Internal `getattr` helper that skips ID mapping.
@@ -366,12 +400,12 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     /// [`do_getattr_inner`][Self::do_getattr_inner] with `mapping: false` to retrieve the raw, unmodified host
     /// attributes of a file. This is essential for the `copy_up` process to correctly
     /// preserve the original file ownership.
-    pub(crate) async fn do_getattr_helper(
+    pub async fn do_getattr_helper(
         &self,
         inode: Inode,
-        handle: Option<Handle>,
-    ) -> io::Result<(libc::stat64, Duration)> {
-        self.do_getattr_inner(inode, handle, false).await
+        fh: Option<u64>,
+    ) -> io::Result<(stat64, Duration)> {
+        self.do_getattr_inner(inode, fh, false).await
     }
 
     async fn do_unlink(&self, parent: Inode, name: &CStr, flags: libc::c_int) -> io::Result<()> {
@@ -482,8 +516,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                 // Calculate the final flags. This involves an async call.
                 let mut final_flags = self.get_writeback_open_flags(flags as i32).await;
-                if !self.cfg.allow_direct_io && (flags as i32) & libc::O_DIRECT != 0 {
-                    final_flags &= !libc::O_DIRECT;
+                if !self.cfg.allow_direct_io && (flags as i32) & O_DIRECT != 0 {
+                    final_flags &= !O_DIRECT;
                 }
                 final_flags |= libc::O_CLOEXEC;
 
@@ -571,7 +605,13 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             )?;
 
             // Safe because this doesn't modify any memory and we check the return value.
-            unsafe { libc::mkdirat(file.as_raw_fd(), name.as_ptr(), mode & !umask) }
+            unsafe {
+                libc::mkdirat(
+                    file.as_raw_fd(),
+                    name.as_ptr(),
+                    (mode & !umask) as libc::mode_t,
+                )
+            }
         };
         if res < 0 {
             return Err(io::Error::last_os_error().into());
@@ -787,7 +827,7 @@ impl Filesystem for PassthroughFs {
                     empty.as_ptr(),
                     uid,
                     gid,
-                    libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                    AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
                 )
             };
             if res < 0 {
@@ -982,7 +1022,7 @@ impl Filesystem for PassthroughFs {
                     file.as_raw_fd(),
                     name.as_ptr(),
                     (mode) as libc::mode_t,
-                    u64::from(rdev),
+                    rdev as libc::dev_t,
                 )
             }
         };
@@ -1059,7 +1099,7 @@ impl Filesystem for PassthroughFs {
                 empty.as_ptr(),
                 new_file.as_raw_fd(),
                 newname.as_ptr(),
-                libc::AT_EMPTY_PATH,
+                AT_EMPTY_PATH,
             )
         };
         if res == 0 {
@@ -1150,7 +1190,7 @@ impl Filesystem for PassthroughFs {
                 }
                 const ALIGN: usize = 4096;
                 let open_flags = data.get_flags().await;
-                let ret = if (open_flags as i32 & libc::O_DIRECT) != 0 {
+                let ret = if (open_flags as i32 & O_DIRECT) != 0 {
                     let mut aligned_buf = unsafe {
                         let layout = std::alloc::Layout::from_size_align(size as _, ALIGN).unwrap();
                         let ptr = std::alloc::alloc(layout);
@@ -1277,26 +1317,35 @@ impl Filesystem for PassthroughFs {
 
     /// get filesystem statistics.
     async fn statfs(&self, _req: Request, inode: Inode) -> Result<ReplyStatFs> {
-        let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
 
-        // Safe because this will only modify `out` and we check the return value.
-        let statfs: libc::statvfs64 =
+        #[cfg(target_os = "linux")]
+        let statfs = {
+            let mut out = MaybeUninit::<libc::statvfs64>::zeroed();
             match unsafe { libc::fstatvfs64(file.as_raw_fd(), out.as_mut_ptr()) } {
-                // Safe because the kernel guarantees that `out` has been initialized.
                 0 => unsafe { out.assume_init() },
                 _ => return Err(io::Error::last_os_error().into()),
-            };
+            }
+        };
+
+        #[cfg(target_os = "macos")]
+        let statfs = {
+            let mut out = MaybeUninit::<libc::statvfs>::zeroed();
+            match unsafe { libc::fstatvfs(file.as_raw_fd(), out.as_mut_ptr()) } {
+                0 => unsafe { out.assume_init() },
+                _ => return Err(io::Error::last_os_error().into()),
+            }
+        };
 
         Ok(
             // Populate the ReplyStatFs structure with the necessary information
             ReplyStatFs {
-                blocks: statfs.f_blocks,
-                bfree: statfs.f_bfree,
-                bavail: statfs.f_bavail,
-                files: statfs.f_files,
-                ffree: statfs.f_ffree,
+                blocks: statfs.f_blocks as u64,
+                bfree: statfs.f_bfree as u64,
+                bavail: statfs.f_bavail as u64,
+                files: statfs.f_files as u64,
+                ffree: statfs.f_ffree as u64,
                 bsize: statfs.f_bsize as u32,
                 namelen: statfs.f_namemax as u32,
                 frsize: statfs.f_frsize as u32,
@@ -1336,7 +1385,14 @@ impl Filesystem for PassthroughFs {
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
             if datasync {
-                libc::fdatasync(fd.as_raw_fd())
+                #[cfg(target_os = "linux")]
+                {
+                    libc::fdatasync(fd.as_raw_fd())
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    libc::fsync(fd.as_raw_fd())
+                }
             } else {
                 libc::fsync(fd.as_raw_fd())
             }
@@ -1372,11 +1428,21 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
+            #[cfg(target_os = "linux")]
             libc::setxattr(
                 pathname.as_ptr(),
                 name.as_ptr(),
                 value.as_ptr() as *const libc::c_void,
                 value.len(),
+                flags as libc::c_int,
+            );
+            #[cfg(target_os = "macos")]
+            libc::setxattr(
+                pathname.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr() as *const libc::c_void,
+                value.len(),
+                0,
                 flags as libc::c_int,
             )
         };
@@ -1413,11 +1479,21 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
+            #[cfg(target_os = "linux")]
             libc::getxattr(
                 pathname.as_ptr(),
                 name.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_void,
                 size as libc::size_t,
+            );
+            #[cfg(target_os = "macos")]
+            libc::getxattr(
+                pathname.as_ptr(),
+                name.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                size as libc::size_t,
+                0,
+                0,
             )
         };
         if res < 0 {
@@ -1454,10 +1530,18 @@ impl Filesystem for PassthroughFs {
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
         let res = unsafe {
+            #[cfg(target_os = "linux")]
             libc::listxattr(
                 pathname.as_ptr(),
                 buf.as_mut_ptr() as *mut libc::c_char,
                 size as libc::size_t,
+            );
+            #[cfg(target_os = "macos")]
+            libc::listxattr(
+                pathname.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+                size as libc::size_t,
+                0,
             )
         };
         if res < 0 {
@@ -1490,7 +1574,10 @@ impl Filesystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this doesn't modify any memory and we check the return value.
+        #[cfg(target_os = "linux")]
         let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr()) };
+        #[cfg(target_os = "macos")]
+        let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr(), 0) };
         if res == 0 {
             Ok(())
         } else {
@@ -1768,12 +1855,21 @@ impl Filesystem for PassthroughFs {
 
         // Safe because this doesn't modify any memory and we check the return value.
         let res = unsafe {
-            libc::fallocate64(
-                fd.as_raw_fd(),
-                mode as libc::c_int,
-                offset as libc::off64_t,
-                length as libc::off64_t,
-            )
+            #[cfg(target_os = "linux")]
+            {
+                libc::fallocate64(
+                    fd.as_raw_fd(),
+                    mode as libc::c_int,
+                    offset as libc::off64_t,
+                    length as libc::off64_t,
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // Stub fallocate
+                *libc::__error() = libc::ENOSYS;
+                -1
+            }
         };
 
         if res == 0 {
@@ -1878,13 +1974,22 @@ impl Filesystem for PassthroughFs {
         let new_file = new_inode.get_file()?;
         //TODO: Switch to libc::renameat2 -> libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
         let res = unsafe {
-            libc::renameat2(
-                old_file.as_raw_fd(),
-                oldname.as_ptr(),
-                new_file.as_raw_fd(),
-                newname.as_ptr(),
-                flags,
-            )
+            #[cfg(target_os = "linux")]
+            {
+                libc::renameat2(
+                    old_file.as_raw_fd(),
+                    oldname.as_ptr(),
+                    new_file.as_raw_fd(),
+                    newname.as_ptr(),
+                    flags,
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // Stub renameat2 with ENOSYS on Mac
+                *libc::__error() = libc::ENOSYS;
+                -1
+            }
         };
 
         if res == 0 {
@@ -1929,7 +2034,14 @@ impl Filesystem for PassthroughFs {
                     // Perform the seek operation using libc::lseek64
                     // This directly manipulates the file descriptor's position
                     let res = unsafe {
-                        libc::lseek64(file.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET)
+                        #[cfg(target_os = "linux")]
+                        {
+                            libc::lseek64(file.as_raw_fd(), offset as libc::off64_t, libc::SEEK_SET)
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            libc::lseek(file.as_raw_fd(), offset as libc::off_t, libc::SEEK_SET)
+                        }
                     };
                     if res < 0 {
                         return Err(io::Error::last_os_error().into());
@@ -1939,7 +2051,16 @@ impl Filesystem for PassthroughFs {
                 // SEEK_CUR: move relative to current directory offset
                 x if x == libc::SEEK_CUR as u32 => {
                     // Get current position using libc::lseek64 with offset 0
-                    let cur = unsafe { libc::lseek64(file.as_raw_fd(), 0, libc::SEEK_CUR) };
+                    let cur = unsafe {
+                        #[cfg(target_os = "linux")]
+                        {
+                            libc::lseek64(file.as_raw_fd(), 0, libc::SEEK_CUR)
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR)
+                        }
+                    };
                     if cur < 0 {
                         return Err(io::Error::last_os_error().into());
                     }
@@ -1953,11 +2074,22 @@ impl Filesystem for PassthroughFs {
                         }
                         // Set the new offset using libc::lseek64
                         let res = unsafe {
-                            libc::lseek64(
-                                file.as_raw_fd(),
-                                new_offset as libc::off64_t,
-                                libc::SEEK_SET,
-                            )
+                            #[cfg(target_os = "linux")]
+                            {
+                                libc::lseek64(
+                                    file.as_raw_fd(),
+                                    new_offset as libc::off64_t,
+                                    libc::SEEK_SET,
+                                )
+                            }
+                            #[cfg(target_os = "macos")]
+                            {
+                                libc::lseek(
+                                    file.as_raw_fd(),
+                                    new_offset as libc::off_t,
+                                    libc::SEEK_SET,
+                                )
+                            }
                         };
                         if res < 0 {
                             return Err(io::Error::last_os_error().into());
@@ -1978,11 +2110,22 @@ impl Filesystem for PassthroughFs {
             // Safe because this doesn't modify any memory and we check the return value.
             // Use 64-bit seek for regular files to match kernel offsets
             let res = unsafe {
-                libc::lseek64(
-                    file.as_raw_fd(),
-                    offset as libc::off64_t,
-                    whence as libc::c_int,
-                )
+                #[cfg(target_os = "linux")]
+                {
+                    libc::lseek64(
+                        file.as_raw_fd(),
+                        offset as libc::off64_t,
+                        whence as libc::c_int,
+                    )
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    libc::lseek(
+                        file.as_raw_fd(),
+                        offset as libc::off_t,
+                        whence as libc::c_int,
+                    )
+                }
             };
             if res < 0 {
                 Err(io::Error::last_os_error().into())
@@ -2022,10 +2165,10 @@ impl Filesystem for PassthroughFs {
         }
 
         // Convert offsets to i64, checking for overflow (offsets > i64::MAX would wrap to negative)
-        let mut off_in: i64 = offset_in
+        let off_in: i64 = offset_in
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let mut off_out: i64 = offset_out
+        let off_out: i64 = offset_out
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
 
@@ -2039,14 +2182,22 @@ impl Filesystem for PassthroughFs {
         // pointers to reflect the new positions after the copy, but doesn't modify the
         // file descriptor positions themselves (when offsets are non-NULL).
         let res = unsafe {
-            libc::copy_file_range(
-                fd_in,
-                &mut off_in as *mut i64, // Pass offset pointer directly
-                fd_out,
-                &mut off_out as *mut i64, // Pass offset pointer directly
-                len,
-                0, // flags (must be 0, already validated above)
-            )
+            #[cfg(target_os = "linux")]
+            {
+                libc::copy_file_range(
+                    fd_in,
+                    &mut off_in as *mut i64,
+                    fd_out,
+                    &mut off_out as *mut i64,
+                    len,
+                    0,
+                )
+            }
+            #[cfg(target_os = "macos")]
+            {
+                *libc::__error() = libc::ENOSYS;
+                -1
+            }
         };
 
         if res < 0 {

@@ -1,8 +1,11 @@
 use config::{CachePolicy, Config};
 use file_handle::{FileHandle, OpenableFileHandle};
 
+#[cfg(target_os = "macos")]
+use self::statx::statx_timestamp;
 use futures::executor::block_on;
 use inode_store::{InodeId, InodeStore};
+#[cfg(target_os = "linux")]
 use libc::{self, statx_timestamp};
 
 use moka::future::Cache;
@@ -160,7 +163,10 @@ impl InodeHandle {
         match self {
             InodeHandle::File(f) => Ok(InodeFile::Ref(f)),
             InodeHandle::Handle(h) => {
+                #[cfg(target_os = "linux")]
                 let f = h.open(libc::O_PATH)?;
+                #[cfg(target_os = "macos")]
+                let f = h.open(libc::O_RDONLY)?;
                 Ok(InodeFile::Owned(f))
             }
         }
@@ -173,7 +179,31 @@ impl InodeHandle {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn stat(&self) -> Result<libc::stat64> {
+        self.do_stat()
+    }
+    #[cfg(target_os = "macos")]
+    fn stat(&self) -> Result<libc::stat> {
+        // On macOS, stat_fd returns libc::stat, which is the correct type.
+        // No explicit cast from stat64 is needed if stat_fd is correctly implemented
+        // to return the platform-specific stat struct.
+        self.do_stat()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn do_stat(&self) -> Result<libc::stat64> {
+        match self {
+            InodeHandle::File(f) => stat_fd(f, None),
+            InodeHandle::Handle(_h) => {
+                let file = self.get_file()?;
+                stat_fd(&file, None)
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn do_stat(&self) -> Result<libc::stat> {
         match self {
             InodeHandle::File(f) => stat_fd(f, None),
             InodeHandle::Handle(_h) => {
@@ -471,13 +501,12 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
         // Safe because this is a constant value and a valid C string.
         let proc_self_fd_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(PROC_SELF_FD_CSTR) };
-        let proc_self_fd = Self::open_file(
-            &libc::AT_FDCWD,
-            proc_self_fd_cstr,
-            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0,
-        )?;
+        #[cfg(target_os = "linux")]
+        let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        #[cfg(target_os = "macos")]
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
+        let proc_self_fd = Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0)?;
         let (dir_entry_timeout, dir_attr_timeout) =
             match (cfg.dir_entry_timeout, cfg.dir_attr_timeout) {
                 (Some(e), Some(a)) => (e, a),
@@ -566,7 +595,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 handle,
                 2,
                 id,
-                st.st.st_mode,
+                st.st.st_mode.into(),
                 st.btime
                     .ok_or_else(|| io::Error::other("birth time not available"))?,
             )))
@@ -666,7 +695,10 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         dir: &impl AsRawFd,
         name: &CStr,
     ) -> io::Result<(Arc<FileHandle>, StatExt)> {
+        #[cfg(target_os = "linux")]
         let path_file = self.open_file_restricted(dir, name, libc::O_PATH, 0)?;
+        #[cfg(target_os = "macos")]
+        let path_file = self.open_file_restricted(dir, name, libc::O_RDONLY, 0)?;
         let st = statx::statx(&path_file, None)?;
 
         let btime_is_valid = match st.btime {
@@ -840,7 +872,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                             handle_clone,
                             1,
                             id,
-                            st.st.st_mode,
+                            st.st.st_mode.into(),
                             st.btime
                                 .ok_or_else(|| io::Error::other("birth time not available"))?,
                         )),
@@ -851,7 +883,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             }
         };
 
-        let (entry_timeout, _) = if is_dir(st.st.st_mode) {
+        let (entry_timeout, _) = if is_dir(st.st.st_mode.into()) {
             (self.dir_entry_timeout, self.dir_attr_timeout)
         } else {
             (self.cfg.entry_timeout, self.cfg.attr_timeout)
