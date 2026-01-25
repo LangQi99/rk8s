@@ -206,26 +206,39 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 let mut offset = 0;
                 while offset < bytes_read {
                     let p = unsafe { buffer.as_ptr().add(offset) };
-                    let dirent = unsafe { &*(p as *const libc::dirent) };
 
-                    let d_ino = dirent.d_ino;
-                    let d_reclen = dirent.d_reclen;
-                    let d_type = dirent.d_type;
-                    let d_namlen = dirent.d_namlen;
-
-                    if d_reclen == 0 {
-                        // Avoid infinite loop if corrupted
+                    if offset + 8 > bytes_read {
                         break;
                     }
 
-                    // d_name is separate array at the end of struct, but in rust definition it might be fixed array.
-                    // libc::dirent definition on macos has d_name as [i8; 1024].
-                    // We need to take d_namlen bytes.
+                    // Logically determined layout from logs:
+                    // 0: d_ino (u32)
+                    // 4: d_reclen (u16)
+                    // 6: d_type (u8)
+                    // 7: d_namlen (u8)
+                    // 8: d_name
 
-                    let name_ptr = dirent.d_name.as_ptr();
-                    let name_slice = unsafe {
-                        std::slice::from_raw_parts(name_ptr as *const u8, d_namlen as usize)
-                    };
+                    let d_ino = unsafe { std::ptr::read_unaligned(p as *const u32) } as u64;
+                    let d_reclen = unsafe { std::ptr::read_unaligned(p.add(4) as *const u16) };
+                    let d_type = unsafe { std::ptr::read_unaligned(p.add(6) as *const u8) };
+                    let d_namlen = unsafe { std::ptr::read_unaligned(p.add(7) as *const u8) };
+
+                    debug!(
+                        "readdir parsed: offset={} d_ino={} d_reclen={} d_namlen={} d_type={}",
+                        offset, d_ino, d_reclen, d_namlen, d_type
+                    );
+
+                    if d_reclen == 0 {
+                        break;
+                    }
+                    if offset + d_reclen as usize > bytes_read {
+                        break;
+                    }
+
+                    let name_ptr = unsafe { p.add(8) };
+                    // use d_namlen
+                    let safe_namlen = std::cmp::min(d_namlen as usize, d_reclen as usize - 8);
+                    let name_slice = unsafe { std::slice::from_raw_parts(name_ptr, safe_namlen) };
 
                     if name_slice == CURRENT_DIR_CSTR || name_slice == PARENT_DIR_CSTR {
                         offset += d_reclen as usize;
@@ -236,22 +249,6 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                     // But we need to provide an offset for the *next* read.
                     // The challenge is PassthroughFs::readdir expects strict offsets for resuming.
                     // 'base' gives the offset of the start of the buffer.
-                    // For now, we can try to use a dummy offset or accumulate.
-                    // However, FUSE readdir requires valid offsets to resume.
-                    // If we just return all entries in one go, likely OK for small dirs.
-                    // But if we need to support strict seeking:
-                    // 'telldir' / 'seekdir' logic applies to DIR*.
-                    // For raw 'getdirentries', 'base' is the starting offset.
-                    // We can estimate offset = base + offset_in_buffer?
-                    // But 'd_off' in linux is a cookie.
-                    // Let's use 'entry.offset = offset + d_reclen + current_file_pos' logic?
-                    // Actually, if we just want it to work for 'ls', basic offsets might suffice.
-                    // Let's rely on the fact that we read sequentially.
-                    // We can use 0 for now or try to reconstruct.
-                    // Wait, DirectoryEntry needs 'offset'. Linux uses 'd_off'.
-                    // macOS dirent doesn't have d_off.
-                    // We will effectively use a synthesized offset or just the current seek offset.
-                    // Let's assume sequential read and use `base + offset`.
 
                     let current_entry_offset = base as u64 + offset as u64 + d_reclen as u64;
 
@@ -264,7 +261,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                     let mut entry = DirectoryEntry {
                         inode: d_ino,
-                        kind: filetype_from_mode((d_type as u16 * 0x1000u16).into()),
+                        kind: filetype_from_mode((d_type as u32 * 0x1000).into()),
                         name: OsString::from_vec(name_vec.clone()),
                         offset: current_entry_offset as i64,
                     };
@@ -274,7 +271,20 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                     // The Linux code calls do_lookup. This adds overhead but refreshes attrs.
                     // We can try to skip it if basic ls is enough, but to be safe and consistent:
-                    let name_cstr = CString::new(name_vec).map_err(|_| einval())?;
+                    // Sanitize name_vec: take up to the first null byte
+                    let name_bytes: Vec<u8> =
+                        name_vec.iter().take_while(|&&b| b != 0).cloned().collect();
+
+                    let name_cstr = match CString::new(name_bytes.clone()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            error!(
+                                "fuse: do_readdir: invalid name bytes after sanitization: {:?} original: {:?} error: {}",
+                                name_bytes, name_vec, e
+                            );
+                            return Err(einval());
+                        }
+                    };
 
                     let _entry = self.do_lookup(inode, &name_cstr).await?;
                     let mut inodes = self.inode_map.inodes.write().await;
