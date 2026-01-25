@@ -250,7 +250,7 @@ impl FileHandle {
         }
         #[cfg(target_os = "macos")]
         {
-            Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+            Ok(None)
         }
     }
 
