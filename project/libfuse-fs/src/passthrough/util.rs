@@ -184,12 +184,12 @@ pub fn reopen_fd_through_proc(
     let name = CString::new(format!("{}", fd.as_raw_fd()).as_str())?;
     // Clear the `O_NOFOLLOW` flag if it is set since we need to follow the `/proc/self/fd` symlink
     // to get the file.
-    openat(
-        proc_self_fd,
-        &name,
-        flags & !libc::O_NOFOLLOW & !libc::O_CREAT,
-        0,
-    )
+    #[cfg(target_os = "macos")]
+    let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT & !libc::O_DIRECTORY;
+    #[cfg(not(target_os = "macos"))]
+    let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT;
+
+    openat(proc_self_fd, &name, flags, 0)
 }
 
 pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
@@ -208,12 +208,16 @@ pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
         );
         #[cfg(target_os = "macos")]
-        libc::fstatat(
-            dir_fd,
-            pathname.as_ptr(),
-            stat.as_mut_ptr(),
-            AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        )
+        if pathname.to_bytes().is_empty() {
+            libc::fstat(dir_fd, stat.as_mut_ptr())
+        } else {
+            libc::fstatat(
+                dir_fd,
+                pathname.as_ptr(),
+                stat.as_mut_ptr(),
+                AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            )
+        }
     };
     if res >= 0 {
         // Safe because the kernel guarantees that the struct is now fully initialized.
