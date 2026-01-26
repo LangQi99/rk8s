@@ -1547,7 +1547,11 @@ impl Filesystem for PassthroughFs {
         let name = name.as_ref();
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
+        #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        #[cfg(target_os = "macos")]
+        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1598,7 +1602,11 @@ impl Filesystem for PassthroughFs {
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
         let mut buf = Vec::<u8>::with_capacity(size as usize);
-        let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd(),))
+        #[cfg(target_os = "linux")]
+        let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        #[cfg(target_os = "macos")]
+        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1649,7 +1657,11 @@ impl Filesystem for PassthroughFs {
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
         let mut buf = Vec::<u8>::with_capacity(size as usize);
+        #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        #[cfg(target_os = "macos")]
+        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
@@ -1694,7 +1706,11 @@ impl Filesystem for PassthroughFs {
         let name = name.as_ref();
         let data = self.inode_map.get(inode).await?;
         let file = data.get_file()?;
+        #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        #[cfg(target_os = "macos")]
+        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
