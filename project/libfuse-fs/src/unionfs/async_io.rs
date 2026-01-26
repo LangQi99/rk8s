@@ -880,7 +880,7 @@ impl Filesystem for OverlayFs {
 
         let mut flags: i32 = flags as i32;
         flags |= libc::O_NOFOLLOW;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             flags &= !libc::O_DIRECT;
         }
