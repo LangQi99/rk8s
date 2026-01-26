@@ -240,7 +240,7 @@ impl FileHandle {
                 )
             };
             if ret == -1 {
-                return Err(io::Error::last_os_os_error());
+                return Err(io::Error::last_os_error());
             }
 
             Ok(Some(FileHandle {

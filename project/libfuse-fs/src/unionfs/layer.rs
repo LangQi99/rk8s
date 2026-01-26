@@ -13,6 +13,11 @@ pub const OPAQUE_XATTR: &str = "user.fuseoverlayfs.opaque";
 pub const UNPRIVILEGED_OPAQUE_XATTR: &str = "user.overlay.opaque";
 pub const PRIVILEGED_OPAQUE_XATTR: &str = "trusted.overlay.opaque";
 
+#[cfg(target_os = "macos")]
+type stat64 = libc::stat;
+#[cfg(not(target_os = "macos"))]
+type stat64 = libc::stat64;
+
 /// A filesystem must implement Layer trait, or it cannot be used as an OverlayFS layer.
 #[async_trait]
 pub trait Layer: ObjectSafeFilesystem {
@@ -225,7 +230,7 @@ pub trait Layer: ObjectSafeFilesystem {
         _inode: Inode,
         _handle: Option<u64>,
         _mapping: bool,
-    ) -> std::io::Result<(crate::passthrough::util::stat64, Duration)> {
+    ) -> std::io::Result<(stat64, Duration)> {
         Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
     }
 }
@@ -302,7 +307,7 @@ impl Layer for PassthroughFs {
         inode: Inode,
         handle: Option<u64>,
         mapping: bool,
-    ) -> std::io::Result<(crate::passthrough::util::stat64, Duration)> {
+    ) -> std::io::Result<(stat64, Duration)> {
         PassthroughFs::do_getattr_inner(self, inode, handle, mapping).await
     }
 }
