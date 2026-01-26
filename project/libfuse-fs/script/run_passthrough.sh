@@ -203,12 +203,12 @@ print_info "PassthroughFS 进程 ID: $FUSE_PID"
 
 # 等待挂载完成
 print_info "等待挂载完成..."
-for i in {1..10}; do
+for i in {1..99}; do
     sleep 1
     if check_mount "$MOUNT_DIR" 2>/dev/null; then
         break
     fi
-    print_info "等待挂载... ($i/10)"
+    print_info "等待挂载... ($i/99)"
 done
 
 # 检查挂载是否成功
