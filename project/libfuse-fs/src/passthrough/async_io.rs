@@ -1891,32 +1891,51 @@ impl Filesystem for PassthroughFs {
             return Ok(());
         }
 
-        if (mode & libc::R_OK) != 0
-            && uid != 0
-            && (st.st_uid != uid || st.st_mode & 0o400 == 0)
-            && (st.st_gid != gid || st.st_mode & 0o040 == 0)
-            && st.st_mode & 0o004 == 0
-        {
-            return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+        if uid == 0 {
+            // root is allowed to read and write everything.
+            // for execution, at least one execute bit must be set.
+            if (mode & libc::X_OK) != 0 && (st.st_mode & 0o111 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            return Ok(());
         }
 
-        if (mode & libc::W_OK) != 0
-            && uid != 0
-            && (st.st_uid != uid || st.st_mode & 0o200 == 0)
-            && (st.st_gid != gid || st.st_mode & 0o020 == 0)
-            && st.st_mode & 0o002 == 0
-        {
-            return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+        if uid == st.st_uid {
+            // check owner permission
+            if (mode & libc::R_OK) != 0 && (st.st_mode & 0o400 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            if (mode & libc::W_OK) != 0 && (st.st_mode & 0o200 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            if (mode & libc::X_OK) != 0 && (st.st_mode & 0o100 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            return Ok(());
         }
 
-        // root can only execute something if it is executable by one of the owner, the group, or
-        // everyone.
-        if (mode & libc::X_OK) != 0
-            && (uid != 0 || st.st_mode & 0o111 == 0)
-            && (st.st_uid != uid || st.st_mode & 0o100 == 0)
-            && (st.st_gid != gid || st.st_mode & 0o010 == 0)
-            && st.st_mode & 0o001 == 0
-        {
+        if gid == st.st_gid {
+            // check group permission
+            if (mode & libc::R_OK) != 0 && (st.st_mode & 0o040 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            if (mode & libc::W_OK) != 0 && (st.st_mode & 0o020 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            if (mode & libc::X_OK) != 0 && (st.st_mode & 0o010 == 0) {
+                return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+            }
+            return Ok(());
+        }
+
+        // check other permission
+        if (mode & libc::R_OK) != 0 && (st.st_mode & 0o004 == 0) {
+            return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+        }
+        if (mode & libc::W_OK) != 0 && (st.st_mode & 0o002 == 0) {
+            return Err(io::Error::from_raw_os_error(libc::EACCES).into());
+        }
+        if (mode & libc::X_OK) != 0 && (st.st_mode & 0o001 == 0) {
             return Err(io::Error::from_raw_os_error(libc::EACCES).into());
         }
 
