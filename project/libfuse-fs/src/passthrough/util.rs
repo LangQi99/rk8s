@@ -186,7 +186,7 @@ pub fn reopen_fd_through_proc(
     // to get the file.
     #[cfg(target_os = "macos")]
     let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT & !libc::O_DIRECTORY;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT;
 
     openat(proc_self_fd, &name, flags, 0)
