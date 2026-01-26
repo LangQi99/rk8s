@@ -166,7 +166,7 @@ impl BindMountManager {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn do_mount(&self, _source: &Path, _target: &Path) -> Result<()> {
         // Bind mounts are not supported on non-Linux platforms yet
         Ok(())
@@ -226,7 +226,7 @@ impl BindMountManager {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn do_unmount(&self, _target: &Path) -> Result<()> {
         Ok(())
     }

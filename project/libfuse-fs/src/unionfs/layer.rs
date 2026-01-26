@@ -15,7 +15,7 @@ pub const PRIVILEGED_OPAQUE_XATTR: &str = "trusted.overlay.opaque";
 
 #[cfg(target_os = "macos")]
 type stat64 = libc::stat;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 type stat64 = libc::stat64;
 
 /// A filesystem must implement Layer trait, or it cannot be used as an OverlayFS layer.
