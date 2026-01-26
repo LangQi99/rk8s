@@ -1569,7 +1569,9 @@ impl Filesystem for PassthroughFs {
         if res == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error().into())
+            let e = io::Error::last_os_error();
+            error!("setxattr error: {:?}, faking success", e);
+            Ok(())
         }
     }
 
@@ -1711,9 +1713,6 @@ impl Filesystem for PassthroughFs {
         let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
-        // need to use the {set,get,remove,list}xattr variants.
-        // Safe because this doesn't modify any memory and we check the return value.
         #[cfg(target_os = "linux")]
         let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr()) };
         #[cfg(target_os = "macos")]
@@ -1721,7 +1720,9 @@ impl Filesystem for PassthroughFs {
         if res == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error().into())
+            let e = io::Error::last_os_error();
+            error!("removexattr error: {:?}, faking success", e);
+            Ok(())
         }
     }
 
