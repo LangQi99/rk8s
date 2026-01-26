@@ -104,9 +104,7 @@ pub async fn new_passthroughfs_layer<P: AsRef<Path>, M: AsRef<str>>(
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     }
 
-    eprintln!("DEBUG: new_passthroughfs_layer called");
     let fs = PassthroughFs::<()>::new(config)?;
-    eprintln!("DEBUG: PassthroughFs::new succeeded");
 
     #[cfg(target_os = "linux")]
     if fs.cfg.do_import {
@@ -528,18 +526,15 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
         // Safe because this is a constant value and a valid C string.
         let proc_self_fd_cstr = unsafe { CStr::from_bytes_with_nul_unchecked(PROC_SELF_FD_CSTR) };
-        eprintln!("DEBUG: Opening proc_self_fd: {:?}", proc_self_fd_cstr);
+
         #[cfg(target_os = "linux")]
         let flags = libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         #[cfg(target_os = "macos")]
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
         let proc_self_fd =
-            Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0).map_err(|e| {
-                eprintln!("DEBUG: Failed to open proc_self_fd: {:?}", e);
-                e
-            })?;
-        eprintln!("DEBUG: Successfully opened proc_self_fd");
+            Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0).map_err(|e| e)?;
+
         let (dir_entry_timeout, dir_attr_timeout) =
             match (cfg.dir_entry_timeout, cfg.dir_attr_timeout) {
                 (Some(e), Some(a)) => (e, a),
@@ -604,22 +599,17 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
     /// Initialize the Passthrough file system.
     pub async fn import(&self) -> Result<()> {
-        eprintln!(
-            "DEBUG: Inside import function using root_dir: {:?}",
-            self.cfg.root_dir
-        );
         let root =
             CString::new(self.cfg.root_dir.as_os_str().as_bytes()).expect("Invalid root_dir");
-        eprintln!("DEBUG: root CString: {:?}", root);
 
         let (handle, st) = Self::open_file_and_handle(self, &libc::AT_FDCWD, &root)
             .await
             .map_err(|e| {
                 error!("fuse: import: failed to get file or handle: {e:?}");
-                eprintln!("DEBUG: open_file_and_handle failed: {:?}", e);
+
                 e
             })?;
-        eprintln!("DEBUG: open_file_and_handle succeeded");
+
         let id = InodeId::from_stat(&st);
 
         // Safe because this doesn't modify any memory and there is no need to check the return
