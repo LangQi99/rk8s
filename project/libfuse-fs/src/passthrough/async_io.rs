@@ -33,7 +33,6 @@ use super::util::{
 };
 use super::{Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::LinuxDirent64};
 #[cfg(target_os = "macos")]
-#[cfg(target_os = "macos")]
 pub const O_DIRECT: libc::c_int = 0;
 #[cfg(target_os = "linux")]
 pub use libc::O_DIRECT;
@@ -246,17 +245,10 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                         continue;
                     }
 
-                    // On macOS, we don't get d_off for each entry from getdirentries easily (d_seekoff is optional/opaque).
-                    // But we need to provide an offset for the *next* read.
-                    // The challenge is PassthroughFs::readdir expects strict offsets for resuming.
-                    // 'base' gives the offset of the start of the buffer.
-
+                    // Generate a resume offset for the next readdir call.
                     let current_entry_offset = base as u64 + offset as u64 + d_reclen as u64;
 
-                    // Note: d_name is NOT null terminated in the slice necessarily if we just take d_namlen bytes?
-                    // Actually it is null terminated in the struct, but we used d_namlen.
-                    // bytes_to_cstr expects null terminated? No, it takes bytes.
-                    // Let's just use Vec<u8> directly.
+                    // Extract the entry name from the buffer.
 
                     let name_vec = name_slice.to_vec();
 
