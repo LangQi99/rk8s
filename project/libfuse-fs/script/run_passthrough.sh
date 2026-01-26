@@ -183,6 +183,10 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
     fi
 fi
 
+# 编译 passthrough 示例
+print_info "编译 Rust 示例..."
+env RUSTFLAGS="-A warnings" cargo build --release -q --example passthrough
+
 # 运行 passthrough 示例
 # 使用正确的命名参数格式
 print_info "启动 PassthroughFS，挂载点: $MOUNT_DIR"
@@ -190,7 +194,7 @@ print_info "命令: RUSTFLAGS=\"-A warnings\" cargo run -q --example passthrough
     --rootdir '$SOURCE_DIR' \
     --mountpoint '$MOUNT_DIR' &'"
 # 尝试特权挂载
-env RUSTFLAGS="-A warnings" cargo run -q --example passthrough -- \
+cargo run -q --example passthrough -- \
     --rootdir "$SOURCE_DIR" \
     --mountpoint "$MOUNT_DIR" &
 
@@ -211,6 +215,7 @@ done
 if check_mount "$MOUNT_DIR" 2>/dev/null; then
     print_info "✅ 挂载成功！可以访问 $MOUNT_DIR"
     print_info "挂载点内容:"
+    print_info "$(ls -la $MOUNT_DIR)"
     ls -la "$MOUNT_DIR" 2>/dev/null | sed 's/^/  /' || print_warn "无法列出挂载点内容，可能需要权限"
     
     # 自动化验证
@@ -219,6 +224,8 @@ if check_mount "$MOUNT_DIR" 2>/dev/null; then
     # 1. 验证文件内容
     if [ -f "$MOUNT_DIR/test_file.txt" ]; then
         CONTENT=$(cat "$MOUNT_DIR/test_file.txt")
+        print_info "cat $MOUNT_DIR/test_file.txt"
+        print_info "$CONTENT"
         if [ "$CONTENT" == "这是一个测试文件" ]; then
             print_info "✅ 文件内容验证通过"
         else
@@ -233,7 +240,9 @@ if check_mount "$MOUNT_DIR" 2>/dev/null; then
     # 2. 验证子目录
     if [ -d "$MOUNT_DIR/subdir" ]; then
         if [ -f "$MOUNT_DIR/subdir/nested_file.txt" ]; then
-             print_info "✅ 子目录和嵌套文件验证通过"
+            print_info "ls -la $MOUNT_DIR/subdir/"
+            print_info "$(ls -la $MOUNT_DIR/subdir)"
+            print_info "✅ 子目录和嵌套文件验证通过"
         else
              print_error "❌ 找不到嵌套文件"
              EXIT_CODE=1
@@ -246,6 +255,8 @@ if check_mount "$MOUNT_DIR" 2>/dev/null; then
     # 3. 验证写操作 (如果支持)
     print_info "尝试写入测试..."
     if echo "write test" > "$MOUNT_DIR/write_test.txt" 2>/dev/null; then
+        print_info "cat $MOUNT_DIR/write_test.txt"
+        print_info "$(cat $MOUNT_DIR/write_test.txt)"
         print_info "✅ 写入验证通过"
         rm "$MOUNT_DIR/write_test.txt"
     else
