@@ -24,7 +24,7 @@ pub type stat64 = libc::stat;
 pub const AT_EMPTY_PATH: i32 = 0;
 
 #[cfg(target_os = "linux")]
-use libc::{AT_EMPTY_PATH, stat64};
+pub use libc::{AT_EMPTY_PATH, stat64};
 
 use super::inode_store::InodeId;
 use super::{CURRENT_DIR_CSTR, EMPTY_CSTR, MAX_HOST_INO, PARENT_DIR_CSTR};
@@ -199,25 +199,29 @@ pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
     let mut stat = MaybeUninit::<stat64>::zeroed();
     let dir_fd = dir.as_raw_fd();
     // Safe because the kernel will only write data in `stat` and we check the return value.
-    let res = unsafe {
+    let res = match () {
         #[cfg(target_os = "linux")]
-        libc::fstatat64(
-            dir_fd,
-            pathname.as_ptr(),
-            stat.as_mut_ptr(),
-            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
-        );
-        #[cfg(target_os = "macos")]
-        if pathname.to_bytes().is_empty() {
-            libc::fstat(dir_fd, stat.as_mut_ptr())
-        } else {
-            libc::fstatat(
+        () => unsafe {
+            libc::fstatat64(
                 dir_fd,
                 pathname.as_ptr(),
                 stat.as_mut_ptr(),
-                AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
             )
-        }
+        },
+        #[cfg(target_os = "macos")]
+        () => unsafe {
+            if pathname.to_bytes().is_empty() {
+                libc::fstat(dir_fd, stat.as_mut_ptr())
+            } else {
+                libc::fstatat(
+                    dir_fd,
+                    pathname.as_ptr(),
+                    stat.as_mut_ptr(),
+                    AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+                )
+            }
+        },
     };
     if res >= 0 {
         // Safe because the kernel guarantees that the struct is now fully initialized.
@@ -261,9 +265,9 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         ino: stat.st_ino,
         size: stat.st_size as u64,
         blocks: stat.st_blocks as u64,
-        atime: Timestamp::new(stat.st_atime, stat.st_atime_nsec.try_into().unwrap()),
-        mtime: Timestamp::new(stat.st_mtime, stat.st_mtime_nsec.try_into().unwrap()),
-        ctime: Timestamp::new(stat.st_ctime, stat.st_ctime_nsec.try_into().unwrap()),
+        atime: Timestamp::new(stat.st_atime as i64, stat.st_atime_nsec.try_into().unwrap()),
+        mtime: Timestamp::new(stat.st_mtime as i64, stat.st_mtime_nsec.try_into().unwrap()),
+        ctime: Timestamp::new(stat.st_ctime as i64, stat.st_ctime_nsec.try_into().unwrap()),
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
         kind: filetype_from_mode(stat.st_mode.into()),
@@ -341,7 +345,7 @@ pub fn osstr_to_cstr(os_str: &OsStr) -> Result<CString, std::ffi::NulError> {
 macro_rules! scoped_cred {
     ($name:ident, $ty:ty, $syscall_nr:expr) => {
         #[derive(Debug)]
-        pub(crate) struct $name;
+        pub struct $name;
 
         impl $name {
             // Changes the effective uid/gid of the current thread to `val`.  Changes
@@ -395,7 +399,7 @@ scoped_cred!(ScopedGid, libc::gid_t, libc::SYS_setresgid);
 
 // Dummy implementation for macOS (or use setreuid/setregid if needed, but for now stub to compile)
 #[cfg(target_os = "macos")]
-pub(crate) struct ScopedUid;
+pub struct ScopedUid;
 #[cfg(target_os = "macos")]
 impl ScopedUid {
     fn new(_: libc::uid_t) -> io::Result<Option<Self>> {
@@ -403,7 +407,7 @@ impl ScopedUid {
     }
 }
 #[cfg(target_os = "macos")]
-pub(crate) struct ScopedGid;
+pub struct ScopedGid;
 #[cfg(target_os = "macos")]
 impl ScopedGid {
     fn new(_: libc::gid_t) -> io::Result<Option<Self>> {

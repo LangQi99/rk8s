@@ -36,7 +36,7 @@ use super::{Handle, HandleData, PassthroughFs, config::CachePolicy, os_compat::L
 #[cfg(target_os = "macos")]
 pub const O_DIRECT: libc::c_int = 0;
 #[cfg(target_os = "linux")]
-use libc::O_DIRECT;
+pub use libc::O_DIRECT;
 
 impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
     async fn open_inode(&self, inode: Inode, flags: i32) -> io::Result<File> {
@@ -1557,24 +1557,28 @@ impl Filesystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this doesn't modify any memory and we check the return value.
-        let res = unsafe {
+        let res = match () {
             #[cfg(target_os = "linux")]
-            libc::setxattr(
-                pathname.as_ptr(),
-                name.as_ptr(),
-                value.as_ptr() as *const libc::c_void,
-                value.len(),
-                flags as libc::c_int,
-            );
+            () => unsafe {
+                libc::setxattr(
+                    pathname.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr() as *const libc::c_void,
+                    value.len(),
+                    flags as libc::c_int,
+                )
+            },
             #[cfg(target_os = "macos")]
-            libc::setxattr(
-                pathname.as_ptr(),
-                name.as_ptr(),
-                value.as_ptr() as *const libc::c_void,
-                value.len(),
-                0,
-                flags as libc::c_int,
-            )
+            () => unsafe {
+                libc::setxattr(
+                    pathname.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr() as *const libc::c_void,
+                    value.len(),
+                    0,
+                    flags as libc::c_int,
+                )
+            },
         };
         if res == 0 {
             Ok(())
@@ -1612,23 +1616,27 @@ impl Filesystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
-        let res = unsafe {
+        let res = match () {
             #[cfg(target_os = "linux")]
-            libc::getxattr(
-                pathname.as_ptr(),
-                name.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                size as libc::size_t,
-            );
+            () => unsafe {
+                libc::getxattr(
+                    pathname.as_ptr(),
+                    name.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    size as libc::size_t,
+                )
+            },
             #[cfg(target_os = "macos")]
-            libc::getxattr(
-                pathname.as_ptr(),
-                name.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_void,
-                size as libc::size_t,
-                0,
-                0,
-            )
+            () => unsafe {
+                libc::getxattr(
+                    pathname.as_ptr(),
+                    name.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    size as libc::size_t,
+                    0,
+                    0,
+                )
+            },
         };
         if res < 0 {
             let e = io::Error::last_os_error();
@@ -1667,20 +1675,24 @@ impl Filesystem for PassthroughFs {
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
         // Safe because this will only modify the contents of `buf`.
-        let res = unsafe {
+        let res = match () {
             #[cfg(target_os = "linux")]
-            libc::listxattr(
-                pathname.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_char,
-                size as libc::size_t,
-            );
+            () => unsafe {
+                libc::listxattr(
+                    pathname.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_char,
+                    size as libc::size_t,
+                )
+            },
             #[cfg(target_os = "macos")]
-            libc::listxattr(
-                pathname.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_char,
-                size as libc::size_t,
-                0,
-            )
+            () => unsafe {
+                libc::listxattr(
+                    pathname.as_ptr(),
+                    buf.as_mut_ptr() as *mut libc::c_char,
+                    size as libc::size_t,
+                    0,
+                )
+            },
         };
         if res < 0 {
             let e = io::Error::last_os_error();
@@ -2307,10 +2319,10 @@ impl Filesystem for PassthroughFs {
         }
 
         // Convert offsets to i64, checking for overflow (offsets > i64::MAX would wrap to negative)
-        let off_in: i64 = offset_in
+        let mut off_in: i64 = offset_in
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let off_out: i64 = offset_out
+        let mut off_out: i64 = offset_out
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
 
