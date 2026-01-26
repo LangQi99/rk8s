@@ -181,15 +181,27 @@ pub fn reopen_fd_through_proc(
     flags: libc::c_int,
     proc_self_fd: &impl AsRawFd,
 ) -> io::Result<File> {
-    let name = CString::new(format!("{}", fd.as_raw_fd()).as_str())?;
     // Clear the `O_NOFOLLOW` flag if it is set since we need to follow the `/proc/self/fd` symlink
     // to get the file.
     #[cfg(target_os = "macos")]
-    let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT & !libc::O_DIRECTORY;
+    {
+        let mut buf = [0u8; libc::MAXPATHLEN as usize];
+        let res = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+        if res < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let path = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
+        let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT & !libc::O_DIRECTORY;
+        // On macOS, F_GETPATH returns the absolute path, so openat will ignore the dir_fd.
+        // We use proc_self_fd as a valid FD placeholder.
+        openat(proc_self_fd, path, flags, 0)
+    }
     #[cfg(target_os = "linux")]
-    let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT;
-
-    openat(proc_self_fd, &name, flags, 0)
+    {
+        let name = CString::new(format!("{}", fd.as_raw_fd()).as_str())?;
+        let flags = flags & !libc::O_NOFOLLOW & !libc::O_CREAT;
+        openat(proc_self_fd, &name, flags, 0)
+    }
 }
 
 pub fn stat_fd(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<stat64> {
