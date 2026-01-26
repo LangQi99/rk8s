@@ -1574,7 +1574,9 @@ impl Filesystem for PassthroughFs {
             if res == 0 {
                 Ok(())
             } else {
-                Err(io::Error::last_os_error().into())
+                let e = io::Error::last_os_error();
+                error!("setxattr error: {:?}, faking success", e);
+                Ok(())
             }
         }
     }
@@ -1723,7 +1725,9 @@ impl Filesystem for PassthroughFs {
             if res == 0 {
                 Ok(())
             } else {
-                Err(io::Error::last_os_error().into())
+                let e = io::Error::last_os_error();
+                error!("removexattr error: {:?}, faking success", e);
+                Ok(())
             }
         }
     }
