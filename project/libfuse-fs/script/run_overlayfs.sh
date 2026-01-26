@@ -165,9 +165,13 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
     fi
 fi
 
+# 编译 Rust 示例
+print_info "编译 Rust 示例..."
+env RUSTFLAGS="-A warnings" cargo build --release -q --example overlayfs_example
+
 # 运行 overlay 示例
 print_info "启动 OverlayFS，挂载点: $MOUNT_DIR"
-env RUSTFLAGS="-A warnings" cargo run -q --example overlayfs_example -- \
+cargo run --release -q --example overlayfs_example -- \
     --mountpoint "$MOUNT_DIR" \
     --upperdir "$UPPER_DIR" \
     --lowerdir "$LOWER_DIR" \
@@ -190,10 +194,7 @@ done
 if check_mount "$MOUNT_DIR" 2>/dev/null; then
     print_info "✅ 挂载成功！可以访问 $MOUNT_DIR"
     print_info "挂载点内容:"
-    ls -la "$MOUNT_DIR" 2>/dev/null | sed 's/^/  /' || print_warn "无法列出挂载点内容，可能需要权限"
-    
-    print_info "✅ 挂载成功！可以访问 $MOUNT_DIR"
-    print_info "挂载点内容:"
+    print_info "$(ls -la $MOUNT_DIR)"
     ls -la "$MOUNT_DIR" 2>/dev/null | sed 's/^/  /' || print_warn "无法列出挂载点内容，可能需要权限"
     
      # 自动化验证
