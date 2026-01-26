@@ -146,7 +146,7 @@ pub trait Layer: Filesystem {
                             return Ok(false);
                         }
                         #[cfg(target_os = "macos")]
-                        if raw_error == libc::ENOATTR {
+                        if raw_error == libc::ENOATTR || raw_error == libc::EPERM {
                             return Ok(false);
                         }
                     }
