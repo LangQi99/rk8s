@@ -571,36 +571,35 @@ mod tests {
 
         // use virtual inode format
         {
-            let util = UniqueInodeGenerator::new();
-            let mut id = InodeId {
+            let generator = UniqueInodeGenerator::new();
+            let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 1,
-                dev: u64::MAX as libc::dev_t,
+                dev: u64::MAX,
                 mnt: u64::MAX,
             };
-            let unique_inode = util.get_unique_inode(&id).unwrap();
-            assert_eq!(unique_inode, 0x80800000000001);
-
-            id.dev = (libc::makedev(129, 128) as u64).try_into().unwrap();
-            id.ino = MAX_HOST_INO + 1;
-            let unique_inode = util.get_unique_inode(&id).unwrap();
-            assert_eq!(unique_inode, 0x81800000000001);
-
-            id.dev = (libc::makedev(128, 129) as u64).try_into().unwrap();
-            id.ino = MAX_HOST_INO + 1;
-            let unique_inode = util.get_unique_inode(&id).unwrap();
-            assert_eq!(unique_inode, 0x80810000000001);
-
-            id.dev = (libc::makedev(128, 128) as u64).try_into().unwrap();
-            id.ino = 1;
-            let unique_inode = util.get_unique_inode(&id).unwrap();
+            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
+            // 56 bit = 1
+            // 55~48 bit = 0000 0001
+            // 47~1 bit  = 2 virtual inode start from 2~MAX_HOST_INO
             assert_eq!(unique_inode, 0x80800000000001);
 
             let inode_alt_key = InodeId {
+                ino: MAX_HOST_INO + 2,
+                dev: u64::MAX,
+                mnt: u64::MAX,
+            };
+            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
+            // 56 bit = 1
+            // 55~48 bit = 0000 0001
+            // 47~1 bit  = 2
+            assert_eq!(unique_inode, 0x80800000000002);
+
+            let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 3,
-                dev: u64::MAX as libc::dev_t,
+                dev: u64::MAX,
                 mnt: 0,
             };
-            let unique_inode = util.get_unique_inode(&inode_alt_key).unwrap();
+            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
             // 56 bit = 1
             // 55~48 bit = 0000 0010
             // 47~1 bit  = 3
@@ -608,10 +607,10 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: u64::MAX,
-                dev: u64::MAX as libc::dev_t,
+                dev: u64::MAX,
                 mnt: u64::MAX,
             };
-            let unique_inode = util.get_unique_inode(&inode_alt_key).unwrap();
+            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
             // 56 bit = 1
             // 55~48 bit = 0000 0001
             // 47~1 bit  = 4
