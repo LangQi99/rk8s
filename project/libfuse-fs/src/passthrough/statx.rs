@@ -18,12 +18,15 @@ pub struct statx_timestamp {
     pub __reserved: i32,
 }
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 pub const STATX_BTIME: u32 = 0x800;
 
+#[allow(unused_imports)]
 use super::{
     EMPTY_CSTR,
     os_compat::{STATX_BASIC_STATS, STATX_MNT_ID, statx_st},
 };
+#[cfg(target_os = "linux")]
 use crate::passthrough::file_handle::FileHandle;
 
 pub type MountId = u64;
@@ -47,6 +50,7 @@ pub struct StatExt {
  * associated flag is set, and then extract the respective information
  * to return it.)
  */
+#[allow(dead_code)]
 trait SafeStatXAccess {
     #[cfg(target_os = "linux")]
     fn stat64(&self) -> Option<libc::stat64>;
@@ -103,6 +107,7 @@ impl SafeStatXAccess for statx_st {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_mount_id(dir: &impl AsRawFd, path: &CStr) -> Option<MountId> {
     match FileHandle::from_name_at(dir, path) {
         Ok(Some(v)) => Some(v.mnt_id),
@@ -131,6 +136,7 @@ fn do_statx(
 
 /// Execute `statx()` to get extended status with mount id.
 pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
+    #[allow(unused)]
     let mut stx_ui = MaybeUninit::<statx_st>::zeroed();
 
     // Linux implementation
@@ -172,7 +178,7 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
     }
     #[cfg(target_os = "macos")]
     {
-        use std::os::unix::ffi::OsStrExt;
+        // use std::os::unix::ffi::OsStrExt;
         let path_cstr =
             path.unwrap_or_else(|| unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) });
 
@@ -200,7 +206,7 @@ pub fn statx(dir: &impl AsRawFd, path: Option<&CStr>) -> io::Result<StatExt> {
             // btime on macos is st_birthtimespec, but referencing it fails for some reason.
             // We'll trust the error and just use st_mtimespec as fallback or 0.
             let btime = statx_timestamp {
-                tv_sec: st.st_mtime as i64,
+                tv_sec: st.st_mtime,
                 tv_nsec: st.st_mtime_nsec as u32,
                 #[cfg(target_os = "macos")]
                 __reserved: 0,
@@ -228,11 +234,13 @@ mod tests {
         let dir = File::open(&topdir).unwrap();
         let filename = CString::new("Cargo.toml").unwrap();
 
-        let st1 = statx(&dir, None).unwrap();
-        let st2 = statx(&dir, Some(&filename)).unwrap();
-        let mnt_id = get_mount_id(&dir, &filename).unwrap();
-
-        assert_eq!(st1.mnt_id, st2.mnt_id);
-        assert_eq!(st1.mnt_id, mnt_id);
+        let _st1 = statx(&dir, None).unwrap();
+        let _st2 = statx(&dir, Some(&filename)).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let mnt_id = get_mount_id(&dir, &filename).unwrap();
+            assert_eq!(_st1.mnt_id, _st2.mnt_id);
+            assert_eq!(_st1.mnt_id, mnt_id);
+        }
     }
 }

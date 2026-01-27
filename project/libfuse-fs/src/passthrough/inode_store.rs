@@ -1,6 +1,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE-BSD-3-Clause file.
 
+#![allow(clippy::useless_conversion)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -175,7 +176,7 @@ mod test {
             file_or_handle1,
             2,
             id1,
-            inode_stat1.st.st_mode,
+            inode_stat1.st.st_mode.into(),
             inode_stat1.btime.unwrap(),
         );
         let data2 = InodeData::new(
@@ -183,7 +184,7 @@ mod test {
             file_or_handle2,
             2,
             id2,
-            inode_stat2.st.st_mode,
+            inode_stat2.st.st_mode.into(),
             inode_stat2.btime.unwrap(),
         );
         let data1 = Arc::new(data1);

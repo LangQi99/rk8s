@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::useless_conversion)]
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE-BSD-3-Clause file.
 // Copyright (C) 2023 Alibaba Cloud. All rights reserved.
@@ -48,6 +50,12 @@ pub struct UniqueInodeGenerator {
     next_virtual_inode: AtomicU64,
 }
 
+impl Default for UniqueInodeGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UniqueInodeGenerator {
     pub fn new() -> Self {
         UniqueInodeGenerator {
@@ -84,10 +92,10 @@ impl UniqueInodeGenerator {
             }
         };
 
-        let inode = if id.ino <= MAX_HOST_INO as u64 {
+        let inode = if id.ino <= MAX_HOST_INO {
             id.ino
         } else {
-            if self.next_virtual_inode.load(Ordering::Relaxed) > MAX_HOST_INO as u64 {
+            if self.next_virtual_inode.load(Ordering::Relaxed) > MAX_HOST_INO {
                 return Err(io::Error::other(format!(
                     "the virtual inode excess {MAX_HOST_INO}"
                 )));
@@ -99,7 +107,7 @@ impl UniqueInodeGenerator {
     }
 
     #[cfg(test)]
-    fn decode_unique_inode(&self, inode: libc::ino64_t) -> io::Result<InodeId> {
+    fn decode_unique_inode(&self, inode: u64) -> io::Result<InodeId> {
         use super::VFS_MAX_INO;
 
         if inode > VFS_MAX_INO {
@@ -276,13 +284,13 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         ino: stat.st_ino,
         size: stat.st_size as u64,
         blocks: stat.st_blocks as u64,
-        atime: Timestamp::new(stat.st_atime as i64, stat.st_atime_nsec.try_into().unwrap()),
-        mtime: Timestamp::new(stat.st_mtime as i64, stat.st_mtime_nsec.try_into().unwrap()),
-        ctime: Timestamp::new(stat.st_ctime as i64, stat.st_ctime_nsec.try_into().unwrap()),
+        atime: Timestamp::new(stat.st_atime, stat.st_atime_nsec.try_into().unwrap()),
+        mtime: Timestamp::new(stat.st_mtime, stat.st_mtime_nsec.try_into().unwrap()),
+        ctime: Timestamp::new(stat.st_ctime, stat.st_ctime_nsec.try_into().unwrap()),
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
         kind: filetype_from_mode(stat.st_mode.into()),
-        perm: stat.st_mode as u16 & 0o7777,
+        perm: (stat.st_mode & 0o7777) as u16,
         nlink: stat.st_nlink as u32,
         uid: stat.st_uid,
         gid: stat.st_gid,
@@ -353,6 +361,7 @@ pub fn osstr_to_cstr(os_str: &OsStr) -> Result<CString, std::ffi::NulError> {
     Ok(c_string)
 }
 
+#[cfg(target_os = "linux")]
 macro_rules! scoped_cred {
     ($name:ident, $ty:ty, $syscall_nr:expr) => {
         #[derive(Debug)]
@@ -494,10 +503,10 @@ mod tests {
 
     #[test]
     fn test_is_dir() {
-        let mode = libc::S_IFREG;
+        let mode = libc::S_IFREG as u32;
         assert!(!is_dir(mode));
 
-        let mode = libc::S_IFDIR;
+        let mode = libc::S_IFDIR as u32;
         assert!(is_dir(mode));
     }
 
@@ -565,7 +574,7 @@ mod tests {
             let util = UniqueInodeGenerator::new();
             let mut id = InodeId {
                 ino: MAX_HOST_INO + 1,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: u64::MAX,
             };
             let unique_inode = util.get_unique_inode(&id).unwrap();
@@ -588,10 +597,10 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 3,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: 0,
             };
-            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
+            let unique_inode = util.get_unique_inode(&inode_alt_key).unwrap();
             // 56 bit = 1
             // 55~48 bit = 0000 0010
             // 47~1 bit  = 3
@@ -599,10 +608,10 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: u64::MAX,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: u64::MAX,
             };
-            let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
+            let unique_inode = util.get_unique_inode(&inode_alt_key).unwrap();
             // 56 bit = 1
             // 55~48 bit = 0000 0001
             // 47~1 bit  = 4

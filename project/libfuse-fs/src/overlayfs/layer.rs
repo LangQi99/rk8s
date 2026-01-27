@@ -59,6 +59,7 @@ pub trait Layer: Filesystem {
         // Try to create whiteout char device with 0/0 device number.
         let dev = libc::makedev(0, 0);
         let mode = libc::S_IFCHR | 0o777;
+        #[allow(clippy::unnecessary_cast)]
         self.mknod(ctx, ino, name, mode as u32, dev as u32).await
     }
 
@@ -141,6 +142,7 @@ pub trait Layer: Filesystem {
                 }
                 Err(e) => {
                     let ioerror: std::io::Error = e.into();
+                    #[allow(clippy::collapsible_if)]
                     if let Some(raw_error) = ioerror.raw_os_error() {
                         if raw_error == libc::ENODATA || raw_error == libc::ENOENT {
                             return Ok(false);
