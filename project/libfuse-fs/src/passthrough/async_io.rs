@@ -913,19 +913,14 @@ impl Filesystem for PassthroughFs {
             return Err(io::Error::from_raw_os_error(libc::EPERM).into());
         }
 
-        if set_attr.mode.is_some() {
+        if let Some(mode) = set_attr.mode {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = unsafe {
                 match data {
-                    Data::Handle(ref h) => {
-                        libc::fchmod(h.borrow_fd().as_raw_fd(), set_attr.mode.unwrap())
+                    Data::Handle(ref h) => libc::fchmod(h.borrow_fd().as_raw_fd(), mode),
+                    Data::ProcPath(ref p) => {
+                        libc::fchmodat(self.proc_self_fd.as_raw_fd(), p.as_ptr(), mode, 0)
                     }
-                    Data::ProcPath(ref p) => libc::fchmodat(
-                        self.proc_self_fd.as_raw_fd(),
-                        p.as_ptr(),
-                        set_attr.mode.unwrap(),
-                        0,
-                    ),
                 }
             };
             if res < 0 {
@@ -933,10 +928,10 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        if set_attr.uid.is_some() && set_attr.gid.is_some() {
+        if let (Some(uid_in), Some(gid_in)) = (set_attr.uid, set_attr.gid) {
             //valid.intersects(SetattrValid::UID | SetattrValid::GID)
-            let uid = self.cfg.mapping.get_uid(set_attr.uid.unwrap());
-            let gid = self.cfg.mapping.get_gid(set_attr.gid.unwrap());
+            let uid = self.cfg.mapping.get_uid(uid_in);
+            let gid = self.cfg.mapping.get_gid(gid_in);
 
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
@@ -956,8 +951,7 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        if set_attr.size.is_some() {
-            let size = set_attr.size.unwrap();
+        if let Some(size) = set_attr.size {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = match data {
                 Data::Handle(ref h) => unsafe {

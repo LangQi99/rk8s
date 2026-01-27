@@ -1,6 +1,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE-BSD-3-Clause file.
 
+#![allow(clippy::useless_conversion)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

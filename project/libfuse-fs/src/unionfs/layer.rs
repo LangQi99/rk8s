@@ -329,6 +329,7 @@ pub(crate) fn is_whiteout(st: &FileAttr) -> bool {
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::unnecessary_cast)]
     use std::{ffi::OsStr, path::PathBuf};
 
     use rfuse3::raw::{Filesystem as _, Request};

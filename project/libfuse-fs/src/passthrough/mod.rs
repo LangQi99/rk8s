@@ -1290,6 +1290,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
 #[cfg(test)]
 #[allow(unused_imports)]
+#[allow(clippy::useless_conversion)]
 mod tests {
     use crate::{
         passthrough::{PassthroughArgs, PassthroughFs, ROOT_ID, new_passthroughfs_layer},
