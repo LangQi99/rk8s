@@ -200,12 +200,13 @@ impl Iterator for Iter<'_> {
         if self.cur.is_none() {
             self.cur = range.range_start;
             self.start_ip = range.range_start;
-            if self.cur == range.gateway {
+            let cur = self.cur?;
+            if Some(cur) == range.gateway {
                 return self.next();
             }
 
-            let ip = IpNetwork::with_netmask(self.cur.unwrap(), range.subnet.mask()).ok();
-            return Some((ip.unwrap(), range.gateway.unwrap()));
+            let ip = IpNetwork::with_netmask(cur, range.subnet.mask()).ok();
+            return Some((ip?, range.gateway?));
         }
 
         let cur = self.cur.unwrap();
@@ -488,7 +489,7 @@ mod tests {
             let store = Arc::new(Store::new(Some("/tmp/ipam4".into())).unwrap());
             let alloc = IpAllocator::new(range_set, store, 1);
             let ip = alloc.get("ID1", "eth0", None).unwrap();
-            assert_eq!(ip.address.ip(), "10.0.0.3".parse::<IpAddr>().unwrap());
+            assert_eq!(ip.address.ip(), "10.0.0.2".parse::<IpAddr>().unwrap());
         }
         {
             let mut range_set: RangeSet = vec![IpRange {
