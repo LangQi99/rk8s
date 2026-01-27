@@ -450,9 +450,11 @@ impl std::error::Error for MPRError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::passthrough::file_handle::FileHandle;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_mount_fd_get() {
         let topdir = std::env::current_dir().unwrap();
         let dir = File::open(&topdir).unwrap();
