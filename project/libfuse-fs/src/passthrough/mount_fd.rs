@@ -207,15 +207,13 @@ impl MountFds {
                 .prefix(format!("Failed to stat mount point \"{mount_point}\""))
         })?;
 
-        if cfg!(target_os = "linux") {
-            if stx.mnt_id != mount_id {
-                return Err(self
-                    .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
-                    .set_desc(format!(
-                        "Mount point's ({}) mount ID ({}) does not match expected value ({})",
-                        mount_point, stx.mnt_id, mount_id
-                    )));
-            }
+        if cfg!(target_os = "linux") && stx.mnt_id != mount_id {
+            return Err(self
+                .error_for(mount_id, io::Error::from_raw_os_error(libc::EIO))
+                .set_desc(format!(
+                    "Mount point's ({}) mount ID ({}) does not match expected value ({})",
+                    mount_point, stx.mnt_id, mount_id
+                )));
         }
 
         Ok(stx.st.st_mode)

@@ -70,6 +70,7 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
         kind: filetype_from_mode(stat.st_mode as u32),
+        #[allow(clippy::unnecessary_cast)]
         perm: (stat.st_mode & 0o7777) as u16,
         nlink: stat.st_nlink as u32,
         uid: stat.st_uid,
