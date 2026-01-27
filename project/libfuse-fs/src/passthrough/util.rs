@@ -13,7 +13,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use rfuse3::{FileType, Timestamp, raw::reply::FileAttr};
-use serde::{Deserialize, Serialize};
 use tracing::error;
 
 #[cfg(target_os = "macos")]
