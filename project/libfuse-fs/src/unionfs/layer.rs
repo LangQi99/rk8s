@@ -65,7 +65,7 @@ pub trait Layer: ObjectSafeFilesystem {
 
         // Try to create whiteout char device with 0/0 device number.
         let dev = libc::makedev(0, 0);
-        let mode = (libc::S_IFCHR as u32) | 0o777;
+        let mode = libc::S_IFCHR | 0o777;
         self.mknod(ctx, ino, name, mode, dev as u32).await
     }
 

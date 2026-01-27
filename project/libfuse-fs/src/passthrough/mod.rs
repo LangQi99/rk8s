@@ -533,7 +533,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
         let proc_self_fd =
-            Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0).map_err(|e| e)?;
+            Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0)?;
 
         let (dir_entry_timeout, dir_attr_timeout) =
             match (cfg.dir_entry_timeout, cfg.dir_attr_timeout) {
@@ -624,7 +624,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 handle,
                 2,
                 id,
-                st.st.st_mode.into(),
+                st.st.st_mode,
                 st.btime
                     .ok_or_else(|| io::Error::other("birth time not available"))?,
             )))
@@ -897,7 +897,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                             inode_handle,
                             1,
                             id,
-                            st.st.st_mode.into(),
+                            st.st.st_mode,
                             st.btime
                                 .ok_or_else(|| io::Error::other("birth time not available"))?,
                         )),
@@ -908,7 +908,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             }
         };
 
-        let (entry_timeout, _) = if is_dir(st.st.st_mode.into()) {
+        let (entry_timeout, _) = if is_dir(st.st.st_mode) {
             (self.dir_entry_timeout, self.dir_attr_timeout)
         } else {
             (self.cfg.entry_timeout, self.cfg.attr_timeout)

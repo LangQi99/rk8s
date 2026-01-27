@@ -69,7 +69,7 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
         ctime: Timestamp::new(stat.st_ctime, stat.st_ctime_nsec.try_into().unwrap()),
         #[cfg(target_os = "macos")]
         crtime: Timestamp::new(0, 0), // Set crtime to 0 for non-macOS platforms
-        kind: filetype_from_mode(stat.st_mode as u32),
+        kind: filetype_from_mode(stat.st_mode),
         perm: (stat.st_mode & 0o7777) as u16,
         nlink: stat.st_nlink as u32,
         uid: stat.st_uid,
@@ -82,26 +82,26 @@ pub fn convert_stat64_to_file_attr(stat: stat64) -> FileAttr {
 }
 
 pub fn filetype_from_mode(st_mode: u32) -> FileType {
-    let st_mode = st_mode & (libc::S_IFMT as u32);
-    if st_mode == (libc::S_IFIFO as u32) {
+    let st_mode = st_mode & libc::S_IFMT;
+    if st_mode == libc::S_IFIFO {
         return FileType::NamedPipe;
     }
-    if st_mode == (libc::S_IFCHR as u32) {
+    if st_mode == libc::S_IFCHR {
         return FileType::CharDevice;
     }
-    if st_mode == (libc::S_IFBLK as u32) {
+    if st_mode == libc::S_IFBLK {
         return FileType::BlockDevice;
     }
-    if st_mode == (libc::S_IFDIR as u32) {
+    if st_mode == libc::S_IFDIR {
         return FileType::Directory;
     }
-    if st_mode == (libc::S_IFREG as u32) {
+    if st_mode == libc::S_IFREG {
         return FileType::RegularFile;
     }
-    if st_mode == (libc::S_IFLNK as u32) {
+    if st_mode == libc::S_IFLNK {
         return FileType::Symlink;
     }
-    if st_mode == (libc::S_IFSOCK as u32) {
+    if st_mode == libc::S_IFSOCK {
         return FileType::Socket;
     }
     // Handle whiteout files on macOS (0xE000 / 57344)
