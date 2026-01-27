@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_cast)]
 use async_trait::async_trait;
 use rfuse3::raw::reply::{FileAttr, ReplyCreated, ReplyXAttr};
 use rfuse3::raw::{ObjectSafeFilesystem, Request, reply::ReplyEntry};

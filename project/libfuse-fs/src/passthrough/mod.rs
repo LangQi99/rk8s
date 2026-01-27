@@ -1,3 +1,4 @@
+#![allow(clippy::useless_conversion)]
 use config::{CachePolicy, Config};
 use file_handle::{FileHandle, OpenableFileHandle};
 
