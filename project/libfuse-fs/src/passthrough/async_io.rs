@@ -44,6 +44,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
             Err(ebadf())
         } else {
             let mut new_flags = self.get_writeback_open_flags(flags).await;
+            #[allow(clippy::bad_bit_mask)]
             if !self.cfg.allow_direct_io && flags & O_DIRECT != 0 {
                 new_flags &= !O_DIRECT;
             }
@@ -154,7 +155,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                     let mut entry = DirectoryEntry {
                         inode: dirent64.d_ino,
-                        kind: filetype_from_mode((dirent64.d_ty as u16 * 0x1000u16).into()),
+                        kind: filetype_from_mode(dirent64.d_ty as u32 * 0x1000u32),
                         name: OsString::from_vec(name.to_vec()),
                         offset: dirent64.d_off,
                     };
@@ -220,8 +221,8 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                     let d_ino = unsafe { std::ptr::read_unaligned(p as *const u32) } as u64;
                     let d_reclen = unsafe { std::ptr::read_unaligned(p.add(4) as *const u16) };
-                    let d_type = unsafe { std::ptr::read_unaligned(p.add(6) as *const u8) };
-                    let d_namlen = unsafe { std::ptr::read_unaligned(p.add(7) as *const u8) };
+                    let d_type = unsafe { std::ptr::read_unaligned(p.add(6)) };
+                    let d_namlen = unsafe { std::ptr::read_unaligned(p.add(7)) };
 
                     debug!(
                         "readdir parsed: offset={} d_ino={} d_reclen={} d_namlen={} d_type={}",
@@ -254,7 +255,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
                     let mut entry = DirectoryEntry {
                         inode: d_ino,
-                        kind: filetype_from_mode((d_type as u32 * 0x1000).into()),
+                        kind: filetype_from_mode(d_type as u32 * 0x1000),
                         name: OsString::from_vec(name_vec.clone()),
                         offset: current_entry_offset as i64,
                     };
@@ -311,6 +312,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         let (_guard, dir) = data.get_file_mut().await;
 
         // Allocate buffer; pay attention to alignment.
+        #[allow(unused_mut)]
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         // Syscall `getdents64` implementation
@@ -627,7 +629,9 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
                 }
 
                 // Calculate the final flags. This involves an async call.
+                #[allow(clippy::bad_bit_mask)]
                 let mut final_flags = self.get_writeback_open_flags(flags as i32).await;
+                #[allow(clippy::bad_bit_mask)]
                 if !self.cfg.allow_direct_io && (flags as i32) & O_DIRECT != 0 {
                     final_flags &= !O_DIRECT;
                 }
@@ -909,19 +913,14 @@ impl Filesystem for PassthroughFs {
             return Err(io::Error::from_raw_os_error(libc::EPERM).into());
         }
 
-        if set_attr.mode.is_some() {
+        if let Some(mode) = set_attr.mode {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = unsafe {
                 match data {
-                    Data::Handle(ref h) => {
-                        libc::fchmod(h.borrow_fd().as_raw_fd(), set_attr.mode.unwrap())
+                    Data::Handle(ref h) => libc::fchmod(h.borrow_fd().as_raw_fd(), mode),
+                    Data::ProcPath(ref p) => {
+                        libc::fchmodat(self.proc_self_fd.as_raw_fd(), p.as_ptr(), mode, 0)
                     }
-                    Data::ProcPath(ref p) => libc::fchmodat(
-                        self.proc_self_fd.as_raw_fd(),
-                        p.as_ptr(),
-                        set_attr.mode.unwrap(),
-                        0,
-                    ),
                 }
             };
             if res < 0 {
@@ -929,10 +928,10 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        if set_attr.uid.is_some() && set_attr.gid.is_some() {
+        if let (Some(uid_in), Some(gid_in)) = (set_attr.uid, set_attr.gid) {
             //valid.intersects(SetattrValid::UID | SetattrValid::GID)
-            let uid = self.cfg.mapping.get_uid(set_attr.uid.unwrap());
-            let gid = self.cfg.mapping.get_gid(set_attr.gid.unwrap());
+            let uid = self.cfg.mapping.get_uid(uid_in);
+            let gid = self.cfg.mapping.get_gid(gid_in);
 
             // Safe because this is a constant value and a valid C string.
             let empty = unsafe { CStr::from_bytes_with_nul_unchecked(EMPTY_CSTR) };
@@ -952,8 +951,7 @@ impl Filesystem for PassthroughFs {
             }
         }
 
-        if set_attr.size.is_some() {
-            let size = set_attr.size.unwrap();
+        if let Some(size) = set_attr.size {
             // Safe because this doesn't modify any memory and we check the return value.
             let res = match data {
                 Data::Handle(ref h) => unsafe {
@@ -1308,6 +1306,7 @@ impl Filesystem for PassthroughFs {
                 }
                 const ALIGN: usize = 4096;
                 let open_flags = data.get_flags().await;
+                #[allow(clippy::bad_bit_mask)]
                 let ret = if (open_flags as i32 & O_DIRECT) != 0 {
                     let mut aligned_buf = unsafe {
                         let layout = std::alloc::Layout::from_size_align(size as _, ALIGN).unwrap();
@@ -1981,13 +1980,13 @@ impl Filesystem for PassthroughFs {
         _req: Request,
         inode: Inode,
         fh: u64,
-        offset: u64,
-        length: u64,
-        mode: u32,
+        _offset: u64,
+        _length: u64,
+        _mode: u32,
     ) -> Result<()> {
         // Let the Arc<HandleData> in scope, otherwise fd may get invalid.
         let data = self.get_data(fh, inode, libc::O_RDWR).await?;
-        let fd = data.borrow_fd();
+        let _fd = data.borrow_fd();
 
         //  if self.seal_size.load().await {
         //      let st = stat_fd(&fd, None)?;
@@ -2005,10 +2004,10 @@ impl Filesystem for PassthroughFs {
             #[cfg(target_os = "linux")]
             {
                 libc::fallocate64(
-                    fd.as_raw_fd(),
-                    mode as libc::c_int,
-                    offset as libc::off64_t,
-                    length as libc::off64_t,
+                    _fd.as_raw_fd(),
+                    _mode as libc::c_int,
+                    _offset as libc::off64_t,
+                    _length as libc::off64_t,
                 )
             }
             #[cfg(target_os = "macos")]
@@ -2106,7 +2105,7 @@ impl Filesystem for PassthroughFs {
         name: &OsStr,
         new_parent: Inode,
         new_name: &OsStr,
-        flags: u32,
+        _flags: u32,
     ) -> Result<()> {
         let oldname = osstr_to_cstr(name).unwrap();
         let oldname = oldname.as_ref();
@@ -2117,18 +2116,18 @@ impl Filesystem for PassthroughFs {
 
         let old_inode = self.inode_map.get(parent).await?;
         let new_inode = self.inode_map.get(new_parent).await?;
-        let old_file = old_inode.get_file()?;
-        let new_file = new_inode.get_file()?;
+        let _old_file = old_inode.get_file()?;
+        let _new_file = new_inode.get_file()?;
         //TODO: Switch to libc::renameat2 -> libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
         let res = unsafe {
             #[cfg(target_os = "linux")]
             {
                 libc::renameat2(
-                    old_file.as_raw_fd(),
+                    _old_file.as_raw_fd(),
                     oldname.as_ptr(),
-                    new_file.as_raw_fd(),
+                    _new_file.as_raw_fd(),
                     newname.as_ptr(),
-                    flags,
+                    _flags,
                 )
             }
             #[cfg(target_os = "macos")]
@@ -2302,8 +2301,8 @@ impl Filesystem for PassthroughFs {
         let data_out = self.handle_map.get(fh_out, inode_out).await?;
 
         // Get file descriptors
-        let fd_in = data_in.borrow_fd().as_raw_fd();
-        let fd_out = data_out.borrow_fd().as_raw_fd();
+        let _fd_in = data_in.borrow_fd().as_raw_fd();
+        let _fd_out = data_out.borrow_fd().as_raw_fd();
 
         // Validate and reject unsupported flags
         // Linux copy_file_range currently doesn't define any flags (should be 0)
@@ -2312,15 +2311,15 @@ impl Filesystem for PassthroughFs {
         }
 
         // Convert offsets to i64, checking for overflow (offsets > i64::MAX would wrap to negative)
-        let mut off_in: i64 = offset_in
+        let mut _off_in: i64 = offset_in
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-        let mut off_out: i64 = offset_out
+        let mut _off_out: i64 = offset_out
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
 
         // Convert length to usize, checking for overflow on 32-bit systems
-        let len: usize = length
+        let _len: usize = length
             .try_into()
             .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
 
@@ -2332,11 +2331,11 @@ impl Filesystem for PassthroughFs {
             #[cfg(target_os = "linux")]
             {
                 libc::copy_file_range(
-                    fd_in,
-                    &mut off_in as *mut i64,
-                    fd_out,
-                    &mut off_out as *mut i64,
-                    len,
+                    _fd_in,
+                    &mut _off_in as *mut i64,
+                    _fd_out,
+                    &mut _off_out as *mut i64,
+                    _len,
                     0,
                 )
             }

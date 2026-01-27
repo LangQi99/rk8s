@@ -1,3 +1,4 @@
+#![allow(clippy::useless_conversion)]
 use config::{CachePolicy, Config};
 use file_handle::{FileHandle, OpenableFileHandle};
 
@@ -532,8 +533,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
         #[cfg(target_os = "macos")]
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
-        let proc_self_fd =
-            Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0).map_err(|e| e)?;
+        let proc_self_fd = Self::open_file(&libc::AT_FDCWD, proc_self_fd_cstr, flags, 0)?;
 
         let (dir_entry_timeout, dir_attr_timeout) =
             match (cfg.dir_entry_timeout, cfg.dir_attr_timeout) {
@@ -1291,6 +1291,7 @@ impl<S: BitmapSlice + Send + Sync> PassthroughFs<S> {
 
 #[cfg(test)]
 #[allow(unused_imports)]
+#[allow(clippy::useless_conversion)]
 mod tests {
     use crate::{
         passthrough::{PassthroughArgs, PassthroughFs, ROOT_ID, new_passthroughfs_layer},

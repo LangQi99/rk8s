@@ -9,14 +9,19 @@ use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::io;
 use std::os::fd::AsFd;
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 
+#[allow(unused_imports)]
 use tracing::error;
 use vmm_sys_util::fam::{FamStruct, FamStructWrapper};
 
 use super::EMPTY_CSTR;
-use super::mount_fd::{MPRResult, MountFd, MountFds, MountId};
+#[cfg(target_os = "linux")]
+use super::mount_fd::MountId;
+use super::mount_fd::{MPRResult, MountFd, MountFds};
 
 /// An arbitrary maximum size for CFileHandle::f_handle.
 ///
@@ -159,6 +164,7 @@ impl Default for FileHandle {
 }
 
 unsafe extern "C" {
+    #[allow(dead_code)]
     unsafe fn name_to_handle_at(
         dirfd: libc::c_int,
         pathname: *const libc::c_char,
@@ -169,6 +175,7 @@ unsafe extern "C" {
 
     // Technically `file_handle` should be a `mut` pointer, but `open_by_handle_at()` is specified
     // not to change it, so we can declare it `const`.
+    #[allow(dead_code)]
     unsafe fn open_by_handle_at(
         mount_fd: libc::c_int,
         file_handle: *const CFileHandleInner,
@@ -186,7 +193,10 @@ impl FileHandle {
     /// returns `Ok(Some)` at some point, it will never return `Ok(None)` later.
     ///
     /// Return an `io::Error` for all other errors.
-    pub fn from_name_at(dir_fd: &impl AsRawFd, path: &CStr) -> io::Result<Option<Self>> {
+    pub fn from_name_at(
+        #[allow(unused_variables)] dir_fd: &impl AsRawFd,
+        #[allow(unused_variables)] path: &CStr,
+    ) -> io::Result<Option<Self>> {
         #[cfg(target_os = "linux")]
         {
             let mut mount_id: libc::c_int = 0;
@@ -302,7 +312,7 @@ impl Debug for OpenableFileHandle {
 
 impl OpenableFileHandle {
     /// Open a file from an openable file handle.
-    pub fn open(&self, flags: libc::c_int) -> io::Result<File> {
+    pub fn open(&self, #[allow(unused_variables)] flags: libc::c_int) -> io::Result<File> {
         #[cfg(target_os = "linux")]
         {
             let ret = unsafe {

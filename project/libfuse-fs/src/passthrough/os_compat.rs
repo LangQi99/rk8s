@@ -68,7 +68,9 @@ pub struct statx_st {
 }
 
 #[cfg(not(target_env = "gnu"))]
+#[allow(dead_code)]
 pub const STATX_BASIC_STATS: libc::c_uint = 0x07ff;
 
 #[cfg(not(target_env = "gnu"))]
+#[allow(dead_code)]
 pub const STATX_MNT_ID: libc::c_uint = 0x1000;
