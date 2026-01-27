@@ -346,7 +346,9 @@ impl OpenableFileHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::ffi::CString;
+    #[cfg(target_os = "linux")]
     use std::fs::OpenOptions;
 
     fn generate_c_file_handle(
@@ -435,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_file_handle_from_name_at() {
         // Create a temporary file in /tmp
         let tmp_dir = std::env::temp_dir();

@@ -574,7 +574,7 @@ mod tests {
             let generator = UniqueInodeGenerator::new();
             let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 1,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: u64::MAX,
             };
             let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
@@ -585,7 +585,7 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 2,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: u64::MAX,
             };
             let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
@@ -596,7 +596,7 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: MAX_HOST_INO + 3,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: 0,
             };
             let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
@@ -607,7 +607,7 @@ mod tests {
 
             let inode_alt_key = InodeId {
                 ino: u64::MAX,
-                dev: u64::MAX,
+                dev: u64::MAX as libc::dev_t,
                 mnt: u64::MAX,
             };
             let unique_inode = generator.get_unique_inode(&inode_alt_key).unwrap();
