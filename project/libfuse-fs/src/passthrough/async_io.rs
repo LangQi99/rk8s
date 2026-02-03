@@ -1541,9 +1541,6 @@ impl Filesystem for PassthroughFs {
         #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        #[cfg(target_os = "macos")]
-        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
@@ -1561,8 +1558,8 @@ impl Filesystem for PassthroughFs {
             },
             #[cfg(target_os = "macos")]
             () => unsafe {
-                libc::setxattr(
-                    pathname.as_ptr(),
+                libc::fsetxattr(
+                    file.as_raw_fd(),
                     name.as_ptr(),
                     value.as_ptr() as *const libc::c_void,
                     value.len(),
@@ -1602,9 +1599,6 @@ impl Filesystem for PassthroughFs {
         #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        #[cfg(target_os = "macos")]
-        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
@@ -1621,8 +1615,8 @@ impl Filesystem for PassthroughFs {
             },
             #[cfg(target_os = "macos")]
             () => unsafe {
-                libc::getxattr(
-                    pathname.as_ptr(),
+                libc::fgetxattr(
+                    file.as_raw_fd(),
                     name.as_ptr(),
                     buf.as_mut_ptr() as *mut libc::c_void,
                     size as libc::size_t,
@@ -1661,9 +1655,6 @@ impl Filesystem for PassthroughFs {
         #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        #[cfg(target_os = "macos")]
-        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // The f{set,get,remove,list}xattr functions don't work on an fd opened with `O_PATH` so we
         // need to use the {set,get,remove,list}xattr variants.
@@ -1679,8 +1670,8 @@ impl Filesystem for PassthroughFs {
             },
             #[cfg(target_os = "macos")]
             () => unsafe {
-                libc::listxattr(
-                    pathname.as_ptr(),
+                libc::flistxattr(
+                    file.as_raw_fd(),
                     buf.as_mut_ptr() as *mut libc::c_char,
                     size as libc::size_t,
                     0,
@@ -1714,14 +1705,11 @@ impl Filesystem for PassthroughFs {
         #[cfg(target_os = "linux")]
         let pathname = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        #[cfg(target_os = "macos")]
-        let pathname = CString::new(format!("/dev/fd/{}", file.as_raw_fd()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         #[cfg(target_os = "linux")]
         let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr()) };
         #[cfg(target_os = "macos")]
-        let res = unsafe { libc::removexattr(pathname.as_ptr(), name.as_ptr(), 0) };
+        let res = unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr(), 0) };
         if res == 0 {
             Ok(())
         } else {
