@@ -149,14 +149,12 @@ pub trait Layer: ObjectSafeFilesystem {
                 }
                 Err(e) => {
                     let ioerror: std::io::Error = e.into();
-                    if let Some(raw_error) = ioerror.raw_os_error() {
-                        if raw_error == libc::ENODATA {
-                            return Ok(false);
-                        }
-                        #[cfg(target_os = "macos")]
-                        if raw_error == libc::ENOATTR {
-                            return Ok(false);
-                        }
+                    if ioerror.raw_os_error() == Some(libc::ENODATA) {
+                        return Ok(false);
+                    }
+                    #[cfg(target_os = "macos")]
+                    if ioerror.raw_os_error() == Some(libc::ENOATTR) {
+                        return Ok(false);
                     }
 
                     Err(e)
