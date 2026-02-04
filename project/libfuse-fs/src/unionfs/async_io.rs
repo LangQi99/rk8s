@@ -19,6 +19,15 @@ impl Filesystem for OverlayFs {
         if self.config.do_import {
             self.import().await?;
         }
+        #[cfg(target_os = "linux")]
+        {
+            for layer in self.lower_layers.iter() {
+                layer.init(_req).await?;
+            }
+            if let Some(upper) = &self.upper_layer {
+                upper.init(_req).await?;
+            }
+        }
         if !self.config.do_import || self.config.writeback {
             self.writeback.store(true, Ordering::Relaxed);
         }
