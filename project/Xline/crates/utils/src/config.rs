@@ -220,7 +220,8 @@ pub struct CompactConfig {
     compact_sleep_interval: Duration,
     /// The auto compactor config
     #[getset(get = "pub")]
-    auto_compact_config: Option<AutoCompactConfig>,
+    #[serde(rename = "auto_compact_config")]
+    auto_compactor: Option<AutoCompactConfig>,
 }
 
 impl Default for CompactConfig {
@@ -229,7 +230,7 @@ impl Default for CompactConfig {
         Self {
             compact_batch_size: default_compact_batch_size(),
             compact_sleep_interval: default_compact_sleep_interval(),
-            auto_compact_config: None,
+            auto_compactor: None,
         }
     }
 }
@@ -241,12 +242,12 @@ impl CompactConfig {
     pub fn new(
         compact_batch_size: usize,
         compact_sleep_interval: Duration,
-        auto_compact_config: Option<AutoCompactConfig>,
+        auto_compactor: Option<AutoCompactConfig>,
     ) -> Self {
         Self {
             compact_batch_size,
             compact_sleep_interval,
-            auto_compact_config,
+            auto_compactor,
         }
     }
 }
@@ -307,7 +308,7 @@ pub struct CurpConfig {
 
     /// How many ticks a follower is allowed to miss before it starts a new round of election
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [follower_timeout_ticks, 2 * follower_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`follower_timeout_ticks`, 2 * `follower_timeout_ticks`)
     #[builder(default = "default_follower_timeout_ticks()")]
     #[serde(default = "default_follower_timeout_ticks")]
     pub follower_timeout_ticks: u8,
@@ -316,7 +317,7 @@ pub struct CurpConfig {
     ///
     /// It should be smaller than `follower_timeout_ticks`
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [candidate_timeout_ticks, 2 * candidate_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`candidate_timeout_ticks`, 2 * `candidate_timeout_ticks`)
     #[builder(default = "default_candidate_timeout_ticks()")]
     #[serde(default = "default_candidate_timeout_ticks")]
     pub candidate_timeout_ticks: u8,
@@ -698,7 +699,7 @@ pub enum AutoCompactConfig {
 pub enum EngineConfig {
     /// Memory Storage Engine
     Memory,
-    /// RocksDB Storage Engine
+    /// `RocksDB` Storage Engine
     RocksDB(PathBuf),
 }
 
@@ -896,27 +897,30 @@ pub fn file_appender(
 pub struct TraceConfig {
     /// Open jaeger online, sending data to jaeger agent directly
     #[getset(get = "pub")]
-    jaeger_online: bool,
-    /// Open jaeger offline, saving data to the `jaeger_output_dir`
+    #[serde(rename = "jaeger_online")]
+    online: bool,
+    /// Open jaeger offline, saving data to the `output_dir`
     #[getset(get = "pub")]
-    jaeger_offline: bool,
-    /// The dir path to save the data when `jaeger_offline` is on
+    #[serde(rename = "jaeger_offline")]
+    offline: bool,
+    /// The dir path to save the data when `offline` is on
     #[getset(get = "pub")]
-    jaeger_output_dir: PathBuf,
+    #[serde(rename = "jaeger_output_dir")]
+    output_dir: PathBuf,
     /// The verbosity level of tracing
     #[getset(get = "pub")]
-    #[serde(with = "level_format", default = "default_log_level")]
-    jaeger_level: LevelConfig,
+    #[serde(rename = "jaeger_level", with = "level_format", default = "default_log_level")]
+    level: LevelConfig,
 }
 
 impl Default for TraceConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            jaeger_online: false,
-            jaeger_offline: false,
-            jaeger_output_dir: "".into(),
-            jaeger_level: default_log_level(),
+            online: false,
+            offline: false,
+            output_dir: "".into(),
+            level: default_log_level(),
         }
     }
 }
@@ -926,16 +930,16 @@ impl TraceConfig {
     #[must_use]
     #[inline]
     pub fn new(
-        jaeger_online: bool,
-        jaeger_offline: bool,
-        jaeger_output_dir: PathBuf,
-        jaeger_level: LevelConfig,
+        online: bool,
+        offline: bool,
+        output_dir: PathBuf,
+        level: LevelConfig,
     ) -> Self {
         Self {
-            jaeger_online,
-            jaeger_offline,
-            jaeger_output_dir,
-            jaeger_level,
+            online,
+            offline,
+            output_dir,
+            level,
         }
     }
 }

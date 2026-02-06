@@ -1,20 +1,18 @@
-use std::ops::{Add, Sub as _};
-
 /// A LCA tree to accelerate Txns' key overlap validation
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct LCATree {
-    ///
+    /// Tree nodes
     nodes: Vec<LCANode>,
 }
 
-///
+/// A node in the LCA tree
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct LCANode {
-    ///
+    /// Parent indices
     pub parent: Vec<usize>,
-    ///
+    /// Depth of this node in the tree
     pub depth: usize,
 }
 
@@ -49,12 +47,12 @@ impl LCATree {
     /// The function panics if given `parent` doesn't exist
     #[inline]
     #[must_use]
-    #[allow(clippy::as_conversions)]
+    #[allow(clippy::as_conversions, clippy::expect_used)]
     pub fn insert_node(&mut self, parent: usize) -> usize {
         let depth = if parent == 0 {
             0
         } else {
-            self.get_node(parent).depth.add(1)
+            self.get_node(parent).depth.checked_add(1).expect("depth overflow")
         };
         let mut node = LCANode {
             parent: vec![],
@@ -66,7 +64,7 @@ impl LCATree {
             node.parent.push(self.get_node(node.parent[i]).parent[i]);
         }
         self.nodes.push(node);
-        self.nodes.len().sub(1)
+        self.nodes.len().checked_sub(1).expect("underflow")
     }
     /// Use Binary Lifting to find the LCA of `node_a` and `node_b`
     ///
