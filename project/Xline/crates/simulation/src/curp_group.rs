@@ -89,7 +89,7 @@ impl CurpGroup {
                 let (as_tx, as_rx) = mpsc::unbounded_channel();
                 let store = Arc::new(Mutex::new(None));
 
-                let cluster_info = Arc::new(ClusterInfo::from_members_map(all.clone(), [], &name));
+                let cluster_info = Arc::new(ClusterInfo::from_members_map(all.clone(), &[], &name));
                 all_members = cluster_info
                     .all_members_peer_urls()
                     .into_iter()

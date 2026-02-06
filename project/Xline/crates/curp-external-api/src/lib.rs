@@ -42,6 +42,9 @@
     clippy::all,
     clippy::pedantic,
     clippy::cargo,
+)]
+#![allow(clippy::multiple_crate_versions)] // Allow multiple versions of dependencies
+#![deny(
 
 
     // The followings are selected restriction lints for rust 1.57

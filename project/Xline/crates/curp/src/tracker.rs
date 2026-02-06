@@ -8,7 +8,7 @@ use std::{
 use clippy_utilities::NumericCast;
 
 /// Bits of usize
-const USIZE_BITS: usize = size_of::<usize>() * 8;
+const USIZE_BITS: usize = size_of::<usize>().wrapping_mul(8);
 
 /// Default bit vec queue capacity, this is the number of inflight requests that a client expects.
 const DEFAULT_BIT_VEC_QUEUE_CAP: usize = 1024;
@@ -196,7 +196,7 @@ pub(super) struct Tracker {
     /// inflight seq nums proposed by the client, each bit
     /// represent the received status starting from `first_incomplete`.
     /// `BitVecQueue` has a better memory compression ratio than `HashSet`
-    /// if the requested seq_num is very compact.
+    /// if the requested `seq_num` is very compact.
     inflight: BitVecQueue,
 }
 
@@ -208,13 +208,14 @@ impl Tracker {
         }
         // first try to batch accelerate
         while self.inflight.map_front(|bits| bits == usize::MAX) == Some(true) {
-            self.first_incomplete
-                .add_assign(self.inflight.pop_batch().numeric_cast::<u64>());
+            self.first_incomplete = self
+                .first_incomplete
+                .wrapping_add(self.inflight.pop_batch().numeric_cast::<u64>());
         }
         // then try pop one by one
         while self.inflight.front() == Some(true) {
             self.inflight.pop();
-            self.first_incomplete.add_assign(1);
+            self.first_incomplete = self.first_incomplete.wrapping_add(1);
         }
         false
     }
@@ -224,7 +225,7 @@ impl Tracker {
         if seq_num < self.first_incomplete {
             return true;
         }
-        let gap = seq_num.sub(self.first_incomplete).numeric_cast();
+        let gap = seq_num.wrapping_sub(self.first_incomplete).numeric_cast();
         if gap < self.inflight.len() {
             // received the sequence number that is recorded in inflight
             // check its status to determine whether it is duplicated
@@ -237,7 +238,7 @@ impl Tracker {
             // received the sequence number that exceed inflight, extend
             // the inflight and record the inflight[gap] as received
             // TODO: batch accelerate
-            for _ in 0..gap.sub(self.inflight.len()) {
+            for _ in 0..gap.wrapping_sub(self.inflight.len()) {
                 self.inflight.push(false);
             }
             self.inflight.push(true);
@@ -251,7 +252,7 @@ impl Tracker {
             return false;
         }
         self.inflight
-            .split_at(first_incomplete.sub(self.first_incomplete).numeric_cast());
+            .split_at(first_incomplete.wrapping_sub(self.first_incomplete).numeric_cast());
         self.first_incomplete = first_incomplete;
         true
     }

@@ -4,6 +4,7 @@ fn main() {
             "ProposeConfChangeRequest.ConfChange",
             "#[derive(serde::Deserialize, serde::Serialize)]",
         )
+        .type_attribute(".", "#[allow(clippy::doc_lazy_continuation)]")
         .compile(
             &["./proto/common/src/curp-command.proto"],
             &["./proto/common/src"],

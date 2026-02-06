@@ -1356,7 +1356,7 @@ mod tests {
             CompactConfig {
                 compact_batch_size: 123,
                 compact_sleep_interval: Duration::from_millis(5),
-                auto_compact_config: Some(AutoCompactConfig::Periodic(Duration::from_secs(
+                auto_compactor: Some(AutoCompactConfig::Periodic(Duration::from_secs(
                     10 * 60 * 60
                 )))
             }
@@ -1528,7 +1528,7 @@ mod tests {
         assert_eq!(
             config.compact,
             CompactConfig {
-                auto_compact_config: Some(AutoCompactConfig::Revision(10000)),
+                auto_compactor: Some(AutoCompactConfig::Revision(10000)),
                 ..Default::default()
             }
         );

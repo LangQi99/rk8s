@@ -87,6 +87,7 @@ mod reconnect;
 )]
 mod proto {
     pub(crate) mod commandpb {
+        #![allow(clippy::doc_lazy_continuation)]
         tonic::include_proto!("commandpb");
     }
 
@@ -898,7 +899,7 @@ impl<C> Eq for PoolEntry<C> {}
 impl<C> PartialOrd for PoolEntry<C> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.id.cmp(&other.id))
+        Some(self.cmp(other))
     }
 }
 

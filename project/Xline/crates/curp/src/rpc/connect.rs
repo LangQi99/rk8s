@@ -308,8 +308,10 @@ pub(crate) struct Connect<C> {
     /// Server id
     id: ServerId,
     /// The rpc connection
+    #[allow(clippy::struct_field_names)]
     rpc_connect: C,
     /// The rpc connection balance sender
+    #[allow(clippy::struct_field_names)]
     change_tx: tokio::sync::mpsc::Sender<tower::discover::Change<String, Endpoint>>,
     /// The current rpc connection address, when the address is updated,
     /// `addrs` will be used to remove previous connection

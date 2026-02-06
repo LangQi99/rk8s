@@ -158,14 +158,14 @@ impl XlineServer {
             (None, InitialClusterState::New) => {
                 info!("get cluster_info by args");
                 let cluster_info =
-                    ClusterInfo::from_members_map(all_members, self_client_urls, &name);
+                    ClusterInfo::from_members_map(all_members, &self_client_urls, &name);
                 curp_storage.put_cluster_info(&cluster_info)?;
                 Ok(cluster_info)
             }
             (None, InitialClusterState::Existing) => {
                 info!("get cluster_info from remote");
                 let cluster_info = get_cluster_info_from_remote(
-                    &ClusterInfo::from_members_map(all_members, self_client_urls, &name),
+                    &ClusterInfo::from_members_map(all_members, &self_client_urls, &name),
                     &self_peer_urls,
                     cluster_config.name(),
                     *cluster_config.client_config().wait_synced_timeout(),

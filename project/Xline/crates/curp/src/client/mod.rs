@@ -159,7 +159,7 @@ impl Drop for ProposeIdGuard<'_> {
     }
 }
 
-/// This trait override some unrepeatable methods in ClientApi, and a client with this trait will be able to retry.
+/// This trait override some unrepeatable methods in `ClientApi`, and a client with this trait will be able to retry.
 #[async_trait]
 trait RepeatableClientApi: ClientApi {
     /// Generate a unique propose id during the retry process.
@@ -351,7 +351,7 @@ impl ClientBuilder {
                     self.all_members = if self.is_raw_curp {
                         Some(r.into_peer_urls())
                     } else {
-                        Some(Self::ensure_no_empty_address(r.into_client_urls())?)
+                        Some(Self::ensure_no_empty_address(r.into_client_urls()).map_err(|e| *e)?)
                     };
                     return Ok(());
                 }
@@ -364,10 +364,10 @@ impl ClientBuilder {
     /// Ensures that no server has an empty list of addresses.
     fn ensure_no_empty_address(
         urls: HashMap<ServerId, Vec<String>>,
-    ) -> Result<HashMap<ServerId, Vec<String>>, tonic::Status> {
+    ) -> Result<HashMap<ServerId, Vec<String>>, Box<tonic::Status>> {
         (!urls.values().any(Vec::is_empty))
             .then_some(urls)
-            .ok_or(tonic::Status::unavailable("cluster not published"))
+            .ok_or_else(|| Box::new(tonic::Status::unavailable("cluster not published")))
     }
 
     /// Init state builder
@@ -432,7 +432,7 @@ impl ClientBuilder {
         &self,
     ) -> Result<
         impl ClientApi<Error = tonic::Status, Cmd = C> + Send + Sync + 'static + use<C>,
-        tonic::Status,
+        Box<tonic::Status>,
     > {
         let state = Arc::new(self.init_state_builder().build());
         let client = Retry::new(
@@ -480,7 +480,7 @@ impl<P: Protocol> ClientBuilderWithBypass<P> {
     #[inline]
     pub fn build<C: Command>(
         self,
-    ) -> Result<impl ClientApi<Error = tonic::Status, Cmd = C>, tonic::Status> {
+    ) -> Result<impl ClientApi<Error = tonic::Status, Cmd = C>, Box<tonic::Status>> {
         let state = self
             .inner
             .init_state_builder()
