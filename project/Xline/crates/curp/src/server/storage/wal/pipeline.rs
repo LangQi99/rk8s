@@ -86,7 +86,7 @@ impl FilePipeline {
     }
 
     /// Stops the pipeline
-    pub(super) fn stop(&mut self) {
+    pub(super) fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
