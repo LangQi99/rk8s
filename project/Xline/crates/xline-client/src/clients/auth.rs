@@ -24,11 +24,7 @@ pub struct AuthClient {
     /// The client running the CURP protocol, communicate with all servers.
     curp_client: Arc<CurpClient>,
     /// The auth RPC client, only communicate with one server at a time
-    #[cfg(not(madsim))]
     auth_client: xlineapi::AuthClient<AuthService<Channel>>,
-    /// The auth RPC client, only communicate with one server at a time
-    #[cfg(madsim)]
-    auth_client: xlineapi::AuthClient<Channel>,
     /// The auth token
     token: Option<String>,
 }

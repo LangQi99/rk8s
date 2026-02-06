@@ -1119,7 +1119,7 @@ impl KvStore {
         let ops = vec![WriteOp::PutScheduledCompactRevision(revision)];
         // TODO: Remove the physical process logic here. It's better to move into the
         // KvServer
-        // FIXME: madsim is single threaded, we cannot use synchronous wait here
+
         let index = self.index();
         let target_revisions = index
             .compact(revision)

@@ -35,9 +35,7 @@ pub(super) struct FilePipeline {
     /// Join handle of the allocation task
     file_alloc_task_handle: Option<JoinHandle<()>>,
     // #[cfg_attr(not(madsim), allow(unused))]
-    #[cfg(madsim)]
-    /// File count used in madsim tests
-    file_count: usize,
+
 }
 
 impl FilePipeline {
@@ -51,8 +49,7 @@ impl FilePipeline {
         let stopped = Arc::new(AtomicBool::new(false));
         let stopped_c = Arc::clone(&stopped);
 
-        #[cfg(not(madsim))]
-        {
+{
             let (file_tx, file_rx) = flume::bounded(1);
             let file_alloc_task_handle = std::thread::spawn(move || {
                 let mut file_count = 0;
@@ -84,18 +81,6 @@ impl FilePipeline {
                 file_iter: Some(file_rx.into_iter()),
                 stopped,
                 file_alloc_task_handle: Some(file_alloc_task_handle),
-            }
-        }
-
-        #[cfg(madsim)]
-        {
-            Self {
-                dir,
-                file_size,
-                file_iter: None,
-                stopped,
-                file_alloc_task_handle: None,
-                file_count: 0,
             }
         }
     }
@@ -142,7 +127,6 @@ impl Drop for FilePipeline {
 impl Iterator for FilePipeline {
     type Item = io::Result<LockedFile>;
 
-    #[cfg(not(madsim))]
     fn next(&mut self) -> Option<Self::Item> {
         if self.stopped.load(Ordering::Relaxed) {
             return None;
@@ -152,14 +136,6 @@ impl Iterator for FilePipeline {
             .unwrap_or_else(|| unreachable!("Option is always `Some`"))
             .next()
             .map(Ok)
-    }
-
-    #[cfg(madsim)]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.stopped.load(Ordering::Relaxed) {
-            return None;
-        }
-        Some(Self::alloc(&self.dir, self.file_size, &mut self.file_count))
     }
 }
 

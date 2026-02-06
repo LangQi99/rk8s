@@ -5,9 +5,6 @@ use bytes::{Bytes, BytesMut};
 use opentelemetry::metrics::Histogram;
 use utils::define_metrics;
 
-#[cfg(madsim)]
-use crate::mock_rocksdb_engine::RocksEngine;
-#[cfg(not(madsim))]
 use crate::rocksdb_engine::RocksEngine;
 use crate::{EngineError, SnapshotApi, StorageEngine, StorageOps, TransactionApi, WriteOperation};
 
