@@ -79,9 +79,9 @@ impl WatchClient {
     /// }
     /// ```
     #[inline]
-    pub async fn watch(
+    pub async fn watch<K: Into<Vec<u8>>>(
         &mut self,
-        key: impl Into<Vec<u8>>,
+        key: K,
         options: Option<WatchOptions>,
     ) -> Result<(Watcher, WatchStreaming)> {
         let (mut request_sender, request_receiver) =

@@ -174,7 +174,7 @@ impl CurpGroup {
 
     async fn gen_listeners(keys: impl Iterator<Item = &String>) -> HashMap<String, TcpListener> {
         join_all(
-            keys.cloned()
+            keys
                 .map(|name| async { (name, TcpListener::bind("0.0.0.0:0").await.unwrap()) }),
         )
         .await

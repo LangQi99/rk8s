@@ -20,7 +20,7 @@ pub struct LeaseClient {
     /// The client running the CURP protocol, communicate with all servers.
     curp_client: Arc<CurpClient>,
     /// The lease RPC client, only communicate with one server at a time
-    lease_client: xlineapi::LeaseClient<AuthService<Channel>>,
+    inner: xlineapi::LeaseClient<AuthService<Channel>>,
     /// Auth token
     token: Option<String>,
     /// Lease Id generator
@@ -31,7 +31,7 @@ impl Debug for LeaseClient {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LeaseClient")
-            .field("lease_client", &self.lease_client)
+            .field("inner", &self.inner)
             .field("token", &self.token)
             .field("id_gen", &self.id_gen)
             .finish()
@@ -49,7 +49,7 @@ impl LeaseClient {
     ) -> Self {
         Self {
             curp_client,
-            lease_client: xlineapi::LeaseClient::new(AuthService::new(
+            inner: xlineapi::LeaseClient::new(AuthService::new(
                 channel,
                 token.as_ref().and_then(|t| t.parse().ok().map(Arc::new)),
             )),
@@ -138,7 +138,7 @@ impl LeaseClient {
     #[inline]
     pub async fn revoke(&mut self, id: i64) -> Result<LeaseRevokeResponse> {
         let res = self
-            .lease_client
+            .inner
             .lease_revoke(xlineapi::LeaseRevokeRequest { id })
             .await?;
         Ok(res.into_inner())
@@ -192,7 +192,7 @@ impl LeaseClient {
             .map_err(|e| XlineClientError::LeaseError(e.to_string()))?;
 
         let mut stream = self
-            .lease_client
+            .inner
             .lease_keep_alive(receiver)
             .await?
             .into_inner();
@@ -244,7 +244,7 @@ impl LeaseClient {
     #[inline]
     pub async fn time_to_live(&mut self, id: i64, keys: bool) -> Result<LeaseTimeToLiveResponse> {
         Ok(self
-            .lease_client
+            .inner
             .lease_time_to_live(xlineapi::LeaseTimeToLiveRequest { id, keys })
             .await?
             .into_inner())

@@ -18,7 +18,7 @@ pub struct KvClient {
     /// The client running the CURP protocol, communicate with all servers.
     curp_client: Arc<CurpClient>,
     /// The lease RPC client, only communicate with one server at a time
-    kv_client: xlineapi::KvClient<AuthService<Channel>>,
+    inner: xlineapi::KvClient<AuthService<Channel>>,
     /// The auth token
     token: Option<String>,
 }
@@ -27,7 +27,7 @@ impl Debug for KvClient {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KvClient")
-            .field("kv_client", &self.kv_client)
+            .field("inner", &self.inner)
             .field("token", &self.token)
             .finish()
     }
@@ -43,7 +43,7 @@ impl KvClient {
     ) -> Self {
         Self {
             curp_client,
-            kv_client: xlineapi::KvClient::new(AuthService::new(
+            inner: xlineapi::KvClient::new(AuthService::new(
                 channel,
                 token.as_ref().and_then(|t| t.parse().ok().map(Arc::new)),
             )),
@@ -78,10 +78,10 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn put(
+    pub async fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
-        value: impl Into<Vec<u8>>,
+        key: K,
+        value: V,
         option: Option<PutOptions>,
     ) -> Result<PutResponse> {
         let request = RequestWrapper::from(xlineapi::PutRequest::from(
@@ -130,9 +130,9 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn range(
+    pub async fn range<K: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
+        key: K,
         options: Option<RangeOptions>,
     ) -> Result<RangeResponse> {
         let request = RequestWrapper::from(xlineapi::RangeRequest::from(
@@ -173,9 +173,9 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn delete(
+    pub async fn delete<K: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
+        key: K,
         options: Option<DeleteRangeOptions>,
     ) -> Result<DeleteRangeResponse> {
         let request = RequestWrapper::from(xlineapi::DeleteRangeRequest::from(
@@ -284,7 +284,7 @@ impl KvClient {
     pub async fn compact(&self, revision: i64, physical: bool) -> Result<CompactionResponse> {
         let request = xlineapi::CompactionRequest { revision, physical };
         if physical {
-            let mut kv_client = self.kv_client.clone();
+            let mut kv_client = self.inner.clone();
             return kv_client
                 .compact(request)
                 .await

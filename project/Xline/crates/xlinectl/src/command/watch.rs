@@ -43,7 +43,7 @@ type BuildRequestFn = dyn Fn(Option<&str>) -> WatchOptions;
 /// Build request from matches
 pub(crate) fn build_request(matches: &ArgMatches) -> Box<BuildRequestFn> {
     let prefix = matches.get_flag("prefix");
-    let rev = matches.get_one::<i64>("rev").map(Clone::clone);
+    let rev = matches.get_one::<i64>("rev").copied();
     let pre_kv = matches.get_flag("pre_kv");
     let progress_notify = matches.get_flag("progress_notify");
 
@@ -140,8 +140,8 @@ fn execute_command_on_events(command_to_execute: &[OsString], resp: &WatchRespon
 
     for event in &resp.events {
         let kv = event.kv.as_ref().expect("expected key-value pair");
-        let watch_key = String::from_utf8(kv.key.clone()).expect("expected valid UTF-8");
-        let watch_value = String::from_utf8(kv.value.clone()).expect("expected valid UTF-8");
+        let watch_key = String::from_utf8(kv.key.clone()).map_err(|e| anyhow::anyhow!("Invalid UTF-8 key: {}", e))?;
+        let watch_value = String::from_utf8(kv.value.clone()).map_err(|e| anyhow::anyhow!("Invalid UTF-8 value: {}", e))?;
         let event_type = match event.r#type {
             0 => "PUT",
             1 => "DELETE",
@@ -198,6 +198,7 @@ async fn exec_interactive(client: &mut Client, matches: &ArgMatches) -> Result<(
             ($line:expr_2021) => {
                 let err = anyhow!(format!("parse failed in: `{}`", $line));
                 eprintln!("{err}");
+                #[allow(clippy::needless_continue)]
                 continue;
             };
         }

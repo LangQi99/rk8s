@@ -13,60 +13,60 @@ Official Xline API client for Rust that supports the [CURP](https://github.com/x
 ## Supported APIs
 
 - KV
-  - [x] Put
-  - [x] Range
-  - [x] Delete
-  - [x] Transaction
-  - [x] Compact
+  - [x] `Put`
+  - [x] `Range`
+  - [x] `Delete`
+  - [x] `Transaction`
+  - [x] `Compact`
 - Lease
-  - [x] Grant
-  - [x] Revoke
-  - [x] KeepAlive
-  - [x] TimeToLive
-  - [x] Leases
+  - [x] `Grant`
+  - [x] `Revoke`
+  - [x] `KeepAlive`
+  - [x] `TimeToLive`
+  - [x] `Leases`
 - Watch
-  - [x] WatchCreate
-  - [x] WatchCancel
+  - [x] `WatchCreate`
+  - [x] `WatchCancel`
 - Auth
-  - [x] Authenticate
-  - [x] RoleAdd
-  - [x] RoleGet
-  - [x] RoleList
-  - [x] RoleDelete
-  - [x] RoleGrantPermission
-  - [x] RoleRevokePermission
-  - [x] UserAdd
-  - [x] UserGet
-  - [x] UserList
-  - [x] UserDelete
-  - [x] UserChangePassword
-  - [x] UserGrantRole
-  - [x] UserRevokeRole
-  - [x] AuthEnable
-  - [x] AuthDisable
-  - [x] AuthStatus
+  - [x] `Authenticate`
+  - [x] `RoleAdd`
+  - [x] `RoleGet`
+  - [x] `RoleList`
+  - [x] `RoleDelete`
+  - [x] `RoleGrantPermission`
+  - [x] `RoleRevokePermission`
+  - [x] `UserAdd`
+  - [x] `UserGet`
+  - [x] `UserList`
+  - [x] `UserDelete`
+  - [x] `UserChangePassword`
+  - [x] `UserGrantRole`
+  - [x] `UserRevokeRole`
+  - [x] `AuthEnable`
+  - [x] `AuthDisable`
+  - [x] `AuthStatus`
 - Cluster
-  - [ ] MemberAdd
-  - [ ] MemberRemove
-  - [ ] MemberUpdate
-  - [x] MemberList
-  - [ ] MemberPromote
+  - [ ] `MemberAdd`
+  - [ ] `MemberRemove`
+  - [ ] `MemberUpdate`
+  - [x] `MemberList`
+  - [ ] `MemberPromote`
 - Election
-  - [ ] Campaign
-  - [ ] Proclaim
-  - [ ] Resign
-  - [ ] Leader
-  - [ ] Observe
+  - [ ] `Campaign`
+  - [ ] `Proclaim`
+  - [ ] `Resign`
+  - [ ] `Leader`
+  - [ ] `Observe`
 - Lock
-  - [x] Lock
-  - [x] Unlock
+  - [x] `Lock`
+  - [x] `Unlock`
 - Maintenance
-  - [ ] Alarm
-  - [ ] Status
-  - [ ] Defragment
-  - [ ] Hash
-  - [x] Snapshot
-  - [ ] MoveLeader
+  - [ ] `Alarm`
+  - [ ] `Status`
+  - [ ] `Defragment`
+  - [ ] `Hash`
+  - [x] `Snapshot`
+  - [ ] `MoveLeader`
 
 Note that certain APIs that have not been implemented in Xline will also not be implemented in `xline-client`.
 

@@ -69,7 +69,7 @@ pub(super) enum TaskType<C: Command> {
     /// After sync an entry
     Entries(Vec<AfterSyncEntry<C>>),
     /// Reset the CE
-    Reset(Option<Snapshot>, oneshot::Sender<()>),
+    Reset(Box<Option<Snapshot>>, oneshot::Sender<()>),
     /// Snapshot
     Snapshot(SnapshotMeta, oneshot::Sender<Snapshot>),
 }
@@ -141,7 +141,7 @@ pub(super) struct CurpNode<C: Command, CE: CommandExecutor<C>, RC: RoleChange> {
     /// Command Executor
     #[allow(unused)]
     cmd_executor: Arc<CE>,
-    /// Tx to send entries to after_sync
+    /// Tx to send entries to `after_sync`
     as_tx: flume::Sender<TaskType<C>>,
     /// Tx to send to propose task
     propose_tx: flume::Sender<Propose<C>>,
@@ -542,7 +542,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                     self.curp.id(),
                 );
                 let (tx, rx) = oneshot::channel();
-                self.as_tx.send(TaskType::Reset(Some(snapshot), tx))?;
+                self.as_tx.send(TaskType::Reset(Box::new(Some(snapshot)), tx))?;
                 rx.await.map_err(|err| {
                     error!("failed to reset the command executor by snapshot, {err}");
                     CurpError::internal(format!(
@@ -580,8 +580,8 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
     ) -> Result<MoveLeaderResponse, CurpError> {
         self.check_cluster_version(req.cluster_version)?;
         let should_send_try_become_leader_now = self.curp.handle_move_leader(req.node_id)?;
-        if should_send_try_become_leader_now {
-            if let Err(e) = self
+        if should_send_try_become_leader_now
+            && let Err(e) = self
                 .curp
                 .connects()
                 .get(&req.node_id)
@@ -595,19 +595,18 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                     req.node_id,
                     e
                 );
-            };
         }
 
         let mut ticker = tokio::time::interval(self.curp.cfg().heartbeat_interval);
         let mut current_leader = self.curp.leader().0;
-        while !current_leader.is_some_and(|id| id == req.node_id) {
+        while current_leader.is_none_or(|id| id != req.node_id) {
             if self.curp.get_transferee().is_none()
                 && current_leader.is_some_and(|id| id != req.node_id)
             {
                 return Err(CurpError::LeaderTransfer(
                     "leader transferee aborted".to_owned(),
                 ));
-            };
+            }
             _ = ticker.tick().await;
             current_leader = self.curp.leader().0;
         }
@@ -722,7 +721,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                 ConfChangeType::Update => {
                     if let Err(e) = curp.update_connect(change.node_id, change.address).await {
                         error!("update connect {} failed, err {:?}", change.node_id, e);
-                        continue;
+
                     }
                 }
                 ConfChangeType::Promote => {}
@@ -791,7 +790,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
             .await
             {
                 break;
-            };
+            }
         }
         debug!("{} to {} sync follower task exits", curp.id(), connect.id());
     }
@@ -816,7 +815,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                 after_sync(entries, cmd_executor, curp).await;
             }
             TaskType::Reset(snap, tx) => {
-                let _ignore = worker_reset(snap, tx, cmd_executor, curp).await;
+                let _ignore = worker_reset(*snap, tx, cmd_executor, curp).await;
             }
             TaskType::Snapshot(meta, tx) => {
                 let _ignore = worker_snapshot(meta, tx, cmd_executor, curp).await;
@@ -1024,7 +1023,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                     Ok(false) => {}
                     Ok(true) | Err(()) => return None,
                 }
-            };
+            }
         }
         None
     }
@@ -1148,18 +1147,16 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                                     && curp
                                         .get_match_index(connect_id)
                                         .is_some_and(|idx| idx == curp.last_log_index())
-                                {
-                                    if let Err(e) = connect
+                                    && let Err(e) = connect
                                         .try_become_leader_now(curp.cfg().wait_synced_timeout)
                                         .await
-                                    {
-                                        warn!(
-                                            "{} send try become leader now to {} failed: {:?}",
-                                            curp.id(),
-                                            connect_id,
-                                            e
-                                        );
-                                    };
+                                {
+                                    warn!(
+                                        "{} send try become leader now to {} failed: {:?}",
+                                        curp.id(),
+                                        connect_id,
+                                        e
+                                    );
                                 }
                             } else {
                                 debug!("ae rejected by {}", connect.id());
@@ -1197,7 +1194,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                                 }
                             }
                         }
-                    };
+                    }
                 }
             }
             SyncAction::Snapshot(rx) => match rx.await {

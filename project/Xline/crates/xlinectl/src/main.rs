@@ -92,7 +92,7 @@
     clippy::shadow_unrelated,
     clippy::str_to_string,
     clippy::string_add,
-    clippy::string_to_string,
+
     clippy::todo,
     clippy::unimplemented,
     clippy::unnecessary_self_imports,
@@ -266,15 +266,15 @@ fn cli() -> Command {
 async fn main() -> Result<()> {
     let matches = cli().get_matches();
     let user_opt = parse_user(&matches)?;
-    let endpoints = matches.get_many::<String>("endpoints").expect("Required");
+    let endpoints = matches.get_many::<String>("endpoints").ok_or_else(|| anyhow::anyhow!("Required endpoints missing"))?;
     let client_config = ClientConfig::new(
-        Duration::from_secs(*matches.get_one("wait_synced_timeout").expect("Required")),
-        Duration::from_secs(*matches.get_one("propose_timeout").expect("Required")),
-        Duration::from_millis(*matches.get_one("initial_retry_timeout").expect("Required")),
-        Duration::from_millis(*matches.get_one("max_retry_timeout").expect("Required")),
-        *matches.get_one("retry_count").expect("Required"),
+        Duration::from_secs(*matches.get_one("wait_synced_timeout").ok_or_else(|| anyhow::anyhow!("Required wait_synced_timeout missing"))?),
+        Duration::from_secs(*matches.get_one("propose_timeout").ok_or_else(|| anyhow::anyhow!("Required propose_timeout missing"))?),
+        Duration::from_millis(*matches.get_one("initial_retry_timeout").ok_or_else(|| anyhow::anyhow!("Required initial_retry_timeout missing"))?),
+        Duration::from_millis(*matches.get_one("max_retry_timeout").ok_or_else(|| anyhow::anyhow!("Required max_retry_timeout missing"))?),
+        *matches.get_one("retry_count").ok_or_else(|| anyhow::anyhow!("Required retry_count missing"))?,
         true,
-        Duration::from_millis(*matches.get_one("keep_alive_interval").expect("Required")),
+        Duration::from_millis(*matches.get_one("keep_alive_interval").ok_or_else(|| anyhow::anyhow!("Required keep_alive_interval missing"))?),
     );
     let ca_path: Option<PathBuf> = matches.get_one("ca_cert_pem_path").cloned();
     let tls_config = match ca_path {
@@ -288,7 +288,7 @@ async fn main() -> Result<()> {
     let options = ClientOptions::new(user_opt, tls_config, client_config);
     let printer_type = match matches
         .get_one::<String>("printer_type")
-        .expect("Required")
+        .ok_or_else(|| anyhow::anyhow!("Required printer_type missing"))?
         .as_str()
     {
         "SIMPLE" => PrinterType::Simple,

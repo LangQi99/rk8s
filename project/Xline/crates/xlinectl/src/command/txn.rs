@@ -82,7 +82,7 @@ pub(crate) fn build_request(matches: &ArgMatches) -> Result<TxnRequest> {
 fn parse_cmp_line(line: &str) -> Result<Compare> {
     // match something like `mod("key1) > "0"`
     #[allow(clippy::unwrap_used)] // This regex is tested to be valid
-    let re = Regex::new(r#"(\w+)\("([^"]+)"\) ([<=>]) "([^"]+)"$"#).unwrap();
+    let re = Regex::new(r#"(\w+)\("([^"]+)"\) ([<=>]) "([^"]+)"$"#).map_err(|e| anyhow::anyhow!("Invalid regex: {}", e))?;
 
     match re.captures(line) {
         #[allow(clippy::indexing_slicing)] // checked in regex so it's safe to index

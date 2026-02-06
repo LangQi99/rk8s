@@ -146,7 +146,7 @@ pub(super) struct RawCurpArgs<C: Command, RC: RoleChange> {
     spec_pool: Arc<Mutex<SpeculativePool<C>>>,
     /// Uncommitted pool
     uncommitted_pool: Arc<Mutex<UncommittedPool<C>>>,
-    /// Tx to send entries to after_sync
+    /// Tx to send entries to `after_sync`
     as_tx: flume::Sender<TaskType<C>>,
     /// Response Senders
     resp_txs: Arc<Mutex<HashMap<LogIndex, Arc<ResponseSender>>>>,
@@ -156,7 +156,7 @@ pub(super) struct RawCurpArgs<C: Command, RC: RoleChange> {
 
 impl<C: Command, RC: RoleChange> RawCurpBuilder<C, RC> {
     /// build `RawCurp` from `RawCurpBuilder`
-    pub(super) fn build_raw_curp(&mut self) -> Result<RawCurp<C, RC>, RawCurpBuilderError> {
+    pub(super) fn build_raw_curp(&self) -> Result<RawCurp<C, RC>, RawCurpBuilderError> {
         let args = self.build()?;
 
         let st = RwLock::new(State::new(
@@ -262,6 +262,7 @@ pub(super) struct Vote {
     /// Candidate's last log term
     pub(super) last_log_term: u64,
     /// Is this a pre vote
+    #[allow(clippy::struct_field_names)]
     pub(super) is_pre_vote: bool,
 }
 
@@ -286,7 +287,7 @@ pub(super) struct AppendEntries<C> {
 enum Role {
     /// Follower
     Follower,
-    /// PreCandidate
+    /// `PreCandidate`
     PreCandidate,
     /// Candidate
     Candidate,
@@ -342,7 +343,7 @@ struct Context<C: Command, RC: RoleChange> {
     spec_pool: Arc<Mutex<SpeculativePool<C>>>,
     /// Uncommitted pool
     uncommitted_pool: Arc<Mutex<UncommittedPool<C>>>,
-    /// Tx to send entries to after_sync
+    /// Tx to send entries to `after_sync`
     as_tx: flume::Sender<TaskType<C>>,
     /// Response Senders
     // TODO: this could be replaced by a queue
@@ -925,7 +926,7 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
         if st_w
             .voted_for
             .as_ref()
-            .map_or(false, |id| id != &candidate_id)
+            .is_some_and(|id| id != &candidate_id)
         {
             return Err(Some(st_w.term));
         }
@@ -1188,10 +1189,10 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
         if st_r.role != Role::Leader {
             return Err(CurpError::redirect(st_r.leader_id, st_r.term));
         }
-        if !self
+        if self
             .cluster()
             .get(&target_id)
-            .is_some_and(|m| !m.is_learner)
+            .is_none_or(|m| m.is_learner)
         {
             return Err(CurpError::LeaderTransfer(
                 "target node does not exist or it is a learner".to_owned(),
@@ -1434,7 +1435,7 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
                 }
             }
             ConfChangeType::Update => {
-                if statuses_ids.get(&node_id).is_none() || !config.contains(node_id) {
+                if !statuses_ids.contains(&node_id) || !config.contains(node_id) {
                     return Err(CurpError::node_not_exist());
                 }
             }
@@ -1444,7 +1445,7 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
                 }
             }
             ConfChangeType::Promote => {
-                if statuses_ids.get(&node_id).is_none() || !config.contains(node_id) {
+                if !statuses_ids.contains(&node_id) || !config.contains(node_id) {
                     metrics::get()
                         .learner_promote_failed
                         .add(1, &[KeyValue::new("reason", "learner not exist")]);
@@ -1793,7 +1794,7 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
         }
 
         // don't commit log from previous term
-        if log.get(i).map_or(true, |entry| entry.term != cur_term) {
+        if log.get(i).is_none_or(|entry| entry.term != cur_term) {
             return false;
         }
 
@@ -2011,10 +2012,11 @@ impl<C: Command, RC: RoleChange> RawCurp<C, RC> {
     /// Notify sync events
     fn notify_sync_events(&self, log: &Log<C>) {
         self.ctx.sync_events.iter().for_each(|e| {
-            if let Some(next) = self.lst.get_next_index(*e.key()) {
-                if next > log.base_index && log.has_next_batch(next) {
-                    let _ignore = e.notify(1);
-                }
+            if let Some(next) = self.lst.get_next_index(*e.key())
+                && next > log.base_index
+                && log.has_next_batch(next)
+            {
+                let _ignore = e.notify(1);
             }
         });
     }

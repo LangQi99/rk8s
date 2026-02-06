@@ -23,11 +23,11 @@ pub type ServerId = u64;
 impl Member {
     /// Create a new `Member`
     #[inline]
-    pub fn new(
+    pub fn new<S: Into<String>, V1: Into<Vec<String>>, V2: Into<Vec<String>>>(
         id: ServerId,
-        name: impl Into<String>,
-        peer_urls: impl Into<Vec<String>>,
-        client_urls: impl Into<Vec<String>>,
+        name: S,
+        peer_urls: V1,
+        client_urls: V2,
         is_learner: bool,
     ) -> Self {
         Self {
@@ -101,9 +101,9 @@ impl ClusterInfo {
     /// panic if `all_members` is empty
     #[inline]
     #[must_use]
-    pub fn from_members_map(
+    pub fn from_members_map<V: Into<Vec<String>>>(
         all_members_peer_urls: HashMap<String, Vec<String>>,
-        self_client_urls: impl Into<Vec<String>>,
+        self_client_urls: V,
         self_name: &str,
     ) -> Self {
         let mut member_id = 0;
@@ -114,7 +114,7 @@ impl ClusterInfo {
             let mut member = Member::new(id, name.clone(), peer_urls, [], false);
             if name == self_name {
                 member_id = id;
-                member.client_urls = self_client_urls.clone();
+                member.client_urls.clone_from(&self_client_urls);
             }
             let _ig = members.insert(id, member);
         }
@@ -155,7 +155,7 @@ impl ClusterInfo {
                     .eq(sorted_self_addr.clone())
                 {
                     member_id = member.id;
-                    member.name = self_name.to_owned();
+                    self_name.clone_into(&mut member.name);
                     member.client_urls = self_client_urls.to_vec();
                 }
                 (member.id, member)
@@ -210,7 +210,7 @@ impl ClusterInfo {
 
     /// Update a member and return old addrs
     #[inline]
-    pub fn update(&self, id: &ServerId, addrs: impl Into<Vec<String>>) -> Vec<String> {
+    pub fn update<V: Into<Vec<String>>>(&self, id: &ServerId, addrs: V) -> Vec<String> {
         let mut addrs = addrs.into();
         let mut member = self
             .members

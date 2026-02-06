@@ -305,6 +305,7 @@ pub(crate) struct Connect<C> {
     /// Server id
     id: ServerId,
     /// The rpc connection
+    #[allow(clippy::struct_field_names)]
     rpc_connect: C,
     /// The rpc connection balance sender
     change_tx: tokio::sync::mpsc::Sender<tower::discover::Change<String, Endpoint>>,

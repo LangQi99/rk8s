@@ -1,4 +1,4 @@
-use std::{ops::SubAssign, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::Future;
@@ -82,7 +82,7 @@ impl Backoff {
         if self.count == 0 {
             return None;
         }
-        self.count.sub_assign(1);
+        self.count = self.count.saturating_sub(1);
         let cur = self.cur_delay;
         if let BackoffConfig::Exponential { max_delay } = self.config.backoff {
             self.cur_delay = self
