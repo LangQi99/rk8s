@@ -389,7 +389,7 @@ impl XlineServer {
             });
         if let Err(e) = self.publish(curp_client).await {
             warn!("publish name to cluster failed: {e:?}");
-        };
+        }
         Ok(())
     }
 

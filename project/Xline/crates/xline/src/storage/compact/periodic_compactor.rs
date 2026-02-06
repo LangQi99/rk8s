@@ -98,6 +98,7 @@ impl<C: Compactable> PeriodicCompactor<C> {
             revision, self.period
         );
 
+        #[allow(clippy::question_mark)]
         let Some(ref compactable) = *self.compactable.read().await else {
             return None;
         };

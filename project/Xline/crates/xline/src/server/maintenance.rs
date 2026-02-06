@@ -218,6 +218,7 @@ impl Maintenance for MaintenanceServer {
 }
 
 /// Generate snapshot stream
+#[allow(clippy::result_large_err)]
 fn snapshot_stream(
     header_gen: &HeaderGenerator,
     db: &DB,
