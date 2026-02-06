@@ -62,6 +62,7 @@ impl<C: Compactable> RevisionCompactor<C> {
             target_revision, self.retention
         );
 
+        #[allow(clippy::question_mark)]
         let Some(ref compactable) = *self.compactable.read().await else {
             return None;
         };

@@ -61,8 +61,8 @@ struct Watcher {
     event_tx: mpsc::Sender<WatchEvent>,
     /// Compacted flag
     compacted: bool,
-    /// TODO: remove it when https://github.com/xline-kv/Xline/issues/491 has been closed
     /// Store the revision that has been notified
+    /// TODO: remove it when <https://github.com/xline-kv/Xline/issues/491> has been closed
     notified_set: HashSet<i64>,
 }
 
@@ -117,10 +117,10 @@ impl Watcher {
     fn filter_events(&self, mut events: Vec<Event>) -> Vec<Event> {
         events.retain(|event| {
             self.filters.iter().all(|filter| filter != &event.r#type)
-                && (event.kv.as_ref().map_or(false, |kv| {
-                    kv.mod_revision >= self.start_rev
-                        && !self.notified_set.contains(&kv.mod_revision)
-                }))
+                && event
+                    .kv
+                    .as_ref()
+                    .is_some_and(|kv| kv.mod_revision >= self.start_rev && !self.notified_set.contains(&kv.mod_revision))
         });
         events
     }
@@ -145,7 +145,7 @@ impl Watcher {
                 || 0 == events_len)
         {
             return Ok(());
-        };
+        }
 
         match self.event_tx.try_send(watch_event) {
             Ok(()) => {
@@ -274,7 +274,7 @@ impl WatcherMap {
                     .filter(|pair| pair.0.watch_id() != watch_id)
                     .collect();
             }
-        };
+        }
     }
 }
 
@@ -336,7 +336,7 @@ impl KvWatcherOps for KvWatcher {
                         .is_none(),
                     "can't insert a watcher to victims twice"
                 );
-            };
+            }
             return;
         }
 
@@ -363,7 +363,7 @@ impl KvWatcherOps for KvWatcher {
                     "can't insert a watcher to victims twice"
                 );
                 return;
-            };
+            }
         }
         debug!("register watcher: {:?}", watcher);
         watcher_map_w.register(watcher);
@@ -443,16 +443,11 @@ impl KvWatcher {
             let victims = kv_watcher
                 .watcher_map
                 .map_write(|mut m| m.victims.drain().collect::<Vec<_>>());
-            let mut new_victims = HashMap::new();
+            let mut new_victims = Vec::new();
             for (mut watcher, res) in victims {
                 // needn't to filter updates and get prev_kv, because the watcher is already filtered before inserted into victims
                 if let Err(TrySendError::Full(watch_event)) = watcher.notify(res) {
-                    assert!(
-                        new_victims
-                            .insert(watcher, (watch_event.revision, watch_event.events))
-                            .is_none(),
-                        "can't insert a watcher to new_victims twice"
-                    );
+                    new_victims.push((watcher, (watch_event.revision, watch_event.events)));
                 } else {
                     let mut watcher_map_w = kv_watcher.watcher_map.write();
                     let initial_events = kv_watcher
@@ -467,14 +462,9 @@ impl KvWatcher {
                         if let Err(TrySendError::Full(watch_event)) =
                             watcher.notify((last_revision, initial_events))
                         {
-                            assert!(
-                                new_victims
-                                    .insert(watcher, (watch_event.revision, watch_event.events))
-                                    .is_none(),
-                                "can't insert a watcher to new_victims twice"
-                            );
+                            new_victims.push((watcher, (watch_event.revision, watch_event.events)));
                             break;
-                        };
+                        }
                     }
                     debug!(
                         watch_id = watcher.watch_id(),
@@ -541,7 +531,7 @@ pub(crate) struct WatchEvent {
     events: Vec<Event>,
     /// Revision when this event is generated
     revision: i64,
-    /// Compacted WatchEvent
+    /// Compacted `WatchEvent`
     compacted: bool,
 }
 
