@@ -2,12 +2,8 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use clippy_utilities::OverflowArithmetic;
-#[cfg(not(madsim))]
-use tonic::transport::ClientTlsConfig;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tracing::debug;
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::build_endpoint;
 use xlineapi::{
     AuthInfo, EventType,
