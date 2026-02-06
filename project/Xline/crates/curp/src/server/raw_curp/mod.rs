@@ -28,15 +28,12 @@ use itertools::Itertools;
 use opentelemetry::KeyValue;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use tokio::sync::{broadcast, oneshot};
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::{
     debug, error,
     log::{Level, log_enabled},
     trace, warn,
 };
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{
     barrier::IdBarrier,
     config::CurpConfig,

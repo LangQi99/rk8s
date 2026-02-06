@@ -168,11 +168,8 @@ use std::{
 use curp::client::ClientBuilder as CurpClientBuilder;
 use http::{HeaderValue, Request, header::AUTHORIZATION};
 use tonic::transport::Channel;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tower::Service;
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{build_endpoint, config::ClientConfig};
 use xlineapi::command::{Command, CurpClient};
 
@@ -456,17 +453,8 @@ struct AuthService<S> {
 impl<S> AuthService<S> {
     /// Create a new `AuthService`
     #[inline]
-    #[cfg(not(madsim))]
     fn new(inner: S, token: Option<Arc<HeaderValue>>) -> Self {
         Self { inner, token }
-    }
-
-    /// Create a new `AuthService`
-    #[inline]
-    #[cfg(madsim)]
-    #[allow(clippy::needless_pass_by_value, clippy::new_ret_no_self)]
-    fn new(inner: S, _token: Option<Arc<HeaderValue>>) -> S {
-        inner
     }
 }
 

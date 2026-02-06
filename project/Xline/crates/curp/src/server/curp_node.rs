@@ -9,18 +9,15 @@ use clippy_utilities::{NumericCast, OverflowArithmetic};
 use engine::{SnapshotAllocator, SnapshotApi};
 use event_listener::Event;
 use futures::{Stream, StreamExt, pin_mut, stream::FuturesUnordered};
-use madsim::rand::{Rng, thread_rng};
+use rand::{Rng, thread_rng};
 use opentelemetry::KeyValue;
 use parking_lot::{Mutex, RwLock};
 use tokio::{
     sync::{broadcast, oneshot},
     time::MissedTickBehavior,
 };
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::{debug, error, info, trace, warn};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{
     barrier::IdBarrier,
     config::CurpConfig,

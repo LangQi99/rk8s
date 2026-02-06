@@ -7,11 +7,8 @@ use std::{
 use curp_test_utils::test_cmd::{LogIndexResult, TestCommand, TestCommandResult};
 use futures::{Stream, future::BoxFuture};
 use tonic::Status;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing_test::traced_test;
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 
 use super::{
     state::State,
