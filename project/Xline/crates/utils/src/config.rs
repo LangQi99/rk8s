@@ -208,7 +208,7 @@ impl ClusterConfig {
 
 /// Compaction configuration
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Getters)]
-#[allow(clippy::module_name_repetitions)]
+#[allow(clippy::module_name_repetitions, clippy::struct_field_names)]
 pub struct CompactConfig {
     /// The max number of historical versions processed in a single compact operation
     #[getset(get = "pub")]
@@ -307,7 +307,7 @@ pub struct CurpConfig {
 
     /// How many ticks a follower is allowed to miss before it starts a new round of election
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [follower_timeout_ticks, 2 * follower_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`follower_timeout_ticks`, 2 * `follower_timeout_ticks`)
     #[builder(default = "default_follower_timeout_ticks()")]
     #[serde(default = "default_follower_timeout_ticks")]
     pub follower_timeout_ticks: u8,
@@ -316,7 +316,7 @@ pub struct CurpConfig {
     ///
     /// It should be smaller than `follower_timeout_ticks`
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [candidate_timeout_ticks, 2 * candidate_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`candidate_timeout_ticks`, 2 * `candidate_timeout_ticks`)
     #[builder(default = "default_candidate_timeout_ticks()")]
     #[serde(default = "default_candidate_timeout_ticks")]
     pub candidate_timeout_ticks: u8,
@@ -690,7 +690,7 @@ pub enum AutoCompactConfig {
 pub enum EngineConfig {
     /// Memory Storage Engine
     Memory,
-    /// RocksDB Storage Engine
+    /// `RocksDB` Storage Engine
     RocksDB(PathBuf),
 }
 
@@ -883,7 +883,7 @@ pub fn file_appender(
 }
 
 /// Xline tracing configuration object
-#[allow(clippy::module_name_repetitions)]
+#[allow(clippy::module_name_repetitions, clippy::struct_field_names)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Getters)]
 pub struct TraceConfig {
     /// Open jaeger online, sending data to jaeger agent directly
