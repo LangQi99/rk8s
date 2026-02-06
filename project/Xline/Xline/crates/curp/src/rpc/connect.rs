@@ -15,12 +15,9 @@ use futures::Stream;
 #[cfg(test)]
 use mockall::automock;
 use tokio::sync::Mutex;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error, info, instrument};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{build_endpoint, tracing::Inject};
 
 use crate::{

@@ -2,9 +2,6 @@ use std::path::{Path, PathBuf};
 
 use bytes::{Bytes, BytesMut};
 
-#[cfg(madsim)]
-use crate::mock_rocksdb_engine::{RocksEngine, RocksSnapshot, RocksTransaction};
-#[cfg(not(madsim))]
 use crate::rocksdb_engine::{RocksEngine, RocksSnapshot, RocksTransaction};
 use crate::{
     SnapshotApi, StorageEngine, StorageOps, TransactionApi, WriteOperation,

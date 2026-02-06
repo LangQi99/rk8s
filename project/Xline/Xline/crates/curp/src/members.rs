@@ -11,11 +11,8 @@ use std::{
 use dashmap::{DashMap, mapref::one::Ref};
 use futures::{StreamExt, stream::FuturesUnordered};
 use itertools::Itertools;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::{debug, info};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 
 use crate::rpc::{self, FetchClusterRequest, FetchClusterResponse, Member};
 

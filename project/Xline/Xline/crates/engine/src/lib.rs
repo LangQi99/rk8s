@@ -176,13 +176,9 @@ mod error;
 mod memory_engine;
 /// Metrics for engine
 mod metrics;
-#[cfg(madsim)]
-/// Mock `RocksDB` Storage Engine
-mod mock_rocksdb_engine;
 /// Snapshot Trait Definition And Implementation
 mod proxy;
 /// `RocksDB` Storage Engine
-#[cfg(not(madsim))]
 mod rocksdb_engine;
 /// Snapshot Allocator
 mod snapshot_allocator;

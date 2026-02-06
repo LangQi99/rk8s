@@ -18,11 +18,7 @@ pub struct KvClient {
     /// The client running the CURP protocol, communicate with all servers.
     curp_client: Arc<CurpClient>,
     /// The lease RPC client, only communicate with one server at a time
-    #[cfg(not(madsim))]
     kv_client: xlineapi::KvClient<AuthService<Channel>>,
-    /// The lease RPC client, only communicate with one server at a time
-    #[cfg(madsim)]
-    kv_client: xlineapi::KvClient<Channel>,
     /// The auth token
     token: Option<String>,
 }

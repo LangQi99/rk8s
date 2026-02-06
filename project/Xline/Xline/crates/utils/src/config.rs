@@ -388,18 +388,10 @@ pub const fn default_max_retry_timeout() -> Duration {
 }
 
 /// default retry count
-#[cfg(not(madsim))]
 #[must_use]
 #[inline]
 pub const fn default_retry_count() -> usize {
     3
-}
-/// default retry count
-#[cfg(madsim)]
-#[must_use]
-#[inline]
-pub const fn default_retry_count() -> usize {
-    10
 }
 
 /// default use backoff

@@ -5,12 +5,8 @@ use clippy_utilities::NumericCast;
 use curp::members::ClusterInfo;
 use futures::stream::Stream;
 use tokio::time;
-#[cfg(not(madsim))]
-use tonic::transport::ClientTlsConfig;
-use tonic::transport::Endpoint;
+use tonic::transport::{ClientTlsConfig, Endpoint};
 use tracing::{debug, warn};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{
     build_endpoint,
     task_manager::{Listener, TaskManager, tasks::TaskName},
