@@ -93,7 +93,6 @@
     clippy::shadow_unrelated,
     clippy::str_to_string,
     clippy::string_add,
-    clippy::string_to_string,
     clippy::todo,
     clippy::unimplemented,
     clippy::unnecessary_self_imports,
@@ -413,7 +412,7 @@ impl ClientOptions {
     /// Set `user`
     #[inline]
     #[must_use]
-    pub fn with_user(self, name: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn with_user<N: Into<String>, P: Into<String>>(self, name: N, password: P) -> Self {
         Self {
             user: Some((name.into(), password.into())),
             ..self

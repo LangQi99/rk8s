@@ -93,7 +93,6 @@
     clippy::shadow_unrelated,
     clippy::str_to_string,
     clippy::string_add,
-    clippy::string_to_string,
     clippy::todo,
     clippy::unimplemented,
     clippy::unnecessary_self_imports,
@@ -265,7 +264,7 @@ pub fn build_endpoint(
                 return endpoint.tls_config(tls_config.clone());
             }
         }
-    };
+    }
     Ok(endpoint)
 }
 

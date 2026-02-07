@@ -18,6 +18,7 @@ pub struct KvClient {
     /// The client running the CURP protocol, communicate with all servers.
     curp_client: Arc<CurpClient>,
     /// The lease RPC client, only communicate with one server at a time
+    #[allow(clippy::struct_field_names)]
     kv_client: xlineapi::KvClient<AuthService<Channel>>,
     /// The auth token
     token: Option<String>,
@@ -78,10 +79,10 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn put(
+    pub async fn put<K: Into<Vec<u8>>, V: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
-        value: impl Into<Vec<u8>>,
+        key: K,
+        value: V,
         option: Option<PutOptions>,
     ) -> Result<PutResponse> {
         let request = RequestWrapper::from(xlineapi::PutRequest::from(
@@ -130,9 +131,9 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn range(
+    pub async fn range<K: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
+        key: K,
         options: Option<RangeOptions>,
     ) -> Result<RangeResponse> {
         let request = RequestWrapper::from(xlineapi::RangeRequest::from(
@@ -173,9 +174,9 @@ impl KvClient {
     /// }
     /// ```
     #[inline]
-    pub async fn delete(
+    pub async fn delete<K: Into<Vec<u8>>>(
         &self,
-        key: impl Into<Vec<u8>>,
+        key: K,
         options: Option<DeleteRangeOptions>,
     ) -> Result<DeleteRangeResponse> {
         let request = RequestWrapper::from(xlineapi::DeleteRangeRequest::from(
