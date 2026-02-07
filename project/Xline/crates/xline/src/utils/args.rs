@@ -140,7 +140,7 @@ pub struct ServerArgs {
     /// Curp client initial retry timeout [default: 50ms]
     #[clap(long, value_parser = parse_duration)]
     client_initial_retry_timeout: Option<Duration>,
-    /// Curp client max retry timeout [default: 10_000ms]
+    /// Curp client max retry timeout [default: `10_000ms`]
     #[clap(long, value_parser = parse_duration)]
     client_max_retry_timeout: Option<Duration>,
     /// Curp client use fixed backoff

@@ -243,8 +243,8 @@ impl Lock for LockServer {
 
         let owner_key = owner_res.kvs;
         let header = if owner_key
-            .get(0)
-            .map_or(false, |kv| kv.create_revision == my_rev)
+            .first()
+            .is_some_and(|kv| kv.create_revision == my_rev)
         {
             owner_res.header
         } else {

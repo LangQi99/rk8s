@@ -178,7 +178,7 @@ where
     }
 
     /// Validate the given `watch_id`, return None if the given id is not available, will generate a new one if the given one equals 0
-    fn validate_watch_id(&mut self, watch_id: WatchId) -> Option<WatchId> {
+    fn validate_watch_id(&self, watch_id: WatchId) -> Option<WatchId> {
         // 0 means auto-generate
         if watch_id == 0 {
             loop {
@@ -317,7 +317,7 @@ where
                 }
             }
             response.events = events;
-        };
+        }
 
         if self.response_tx.send(Ok(response)).await.is_err() {
             let _ignore = self.stop_notify.notify(1);
@@ -328,7 +328,7 @@ where
     }
 
     /// Handle progress for request
-    async fn handle_watch_progress(&mut self, _req: WatchProgressRequest) {
+    async fn handle_watch_progress(&self, _req: WatchProgressRequest) {
         if self
             .response_tx
             .send(Ok(WatchResponse {
