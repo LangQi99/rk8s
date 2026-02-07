@@ -453,7 +453,7 @@ impl XlineServer {
         };
 
         let auto_compactor =
-            if let Some(auto_config_cfg) = *self.compact_config.auto_compact_config() {
+            if let Some(auto_config_cfg) = *self.compact_config.auto_compactor() {
                 Some(
                     auto_compactor(
                         *self.cluster_config.is_leader(),
