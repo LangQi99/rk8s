@@ -27,8 +27,8 @@ pub(super) struct FilePipeline {
     file_size: u64,
     /// The file receive iterator
     ///
-    /// As tokio::fs is generally slower than std::fs, we use synchronous file allocation.
-    /// Please also refer to the issue discussed on the tokio repo: https://github.com/tokio-rs/tokio/issues/3664
+    /// As `tokio::fs` is generally slower than `std::fs`, we use synchronous file allocation.
+    /// Please also refer to the issue discussed on the tokio repo: <https://github.com/tokio-rs/tokio/issues/3664>
     file_iter: Option<flume::IntoIter<LockedFile>>,
     /// Stopped flag
     stopped: Arc<AtomicBool>,
@@ -86,7 +86,7 @@ impl FilePipeline {
     }
 
     /// Stops the pipeline
-    pub(super) fn stop(&mut self) {
+    pub(super) fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
@@ -103,11 +103,10 @@ impl FilePipeline {
     fn clean_up(dir: &PathBuf) -> io::Result<()> {
         for result in std::fs::read_dir(dir)? {
             let file = result?;
-            if let Some(filename) = file.file_name().to_str() {
-                if filename.ends_with(TEMP_FILE_EXT) {
+            if let Some(filename) = file.file_name().to_str()
+                && filename.ends_with(TEMP_FILE_EXT) {
                     std::fs::remove_file(file.path())?;
                 }
-            }
         }
         Ok(())
     }

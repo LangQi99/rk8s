@@ -611,7 +611,7 @@ impl RocksSnapshot {
             let meta_data = buf.split_to(meta_len.numeric_cast::<usize>().overflow_add(8));
             #[allow(clippy::indexing_slicing)]
             let meta = bincode::deserialize(&meta_data[8..])
-                .map_err(|e| io::Error::other(e))?;
+                .map_err(io::Error::other)?;
 
             self.apply_snap_meta(meta);
             *self.meta.data.get_mut() = meta_data;

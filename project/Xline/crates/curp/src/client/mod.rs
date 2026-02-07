@@ -155,7 +155,7 @@ impl Drop for ProposeIdGuard<'_> {
     }
 }
 
-/// This trait override some unrepeatable methods in ClientApi, and a client with this trait will be able to retry.
+/// This trait override some unrepeatable methods in `ClientApi`, and a client with this trait will be able to retry.
 #[async_trait]
 trait RepeatableClientApi: ClientApi {
     /// Generate a unique propose id during the retry process.
@@ -358,6 +358,7 @@ impl ClientBuilder {
     }
 
     /// Ensures that no server has an empty list of addresses.
+    #[allow(clippy::result_large_err)]
     fn ensure_no_empty_address(
         urls: HashMap<ServerId, Vec<String>>,
     ) -> Result<HashMap<ServerId, Vec<String>>, tonic::Status> {
@@ -424,6 +425,7 @@ impl ClientBuilder {
     ///
     /// Return `tonic::transport::Error` for connection failure.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(
         &self,
     ) -> Result<
@@ -450,6 +452,7 @@ impl<P: Protocol> ClientBuilderWithBypass<P> {
     ///
     /// Return `tonic::transport::Error` for connection failure.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(
         self,
     ) -> Result<impl ClientApi<Error = tonic::Status, Cmd = C>, tonic::Status> {
