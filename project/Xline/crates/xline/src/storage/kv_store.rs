@@ -1360,6 +1360,7 @@ mod test {
         StoreWrapper(Some(storage), task_manager)
     }
 
+    #[allow(clippy::unwrap_in_result)]
     fn exe_as_and_flush(
         store: &Arc<KvStore>,
         request: &RequestWrapper,
@@ -1387,6 +1388,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_keys_only() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let (store, _rev) = init_store(db)?;
@@ -1408,6 +1410,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_range_empty() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let (store, _rev) = init_store(db)?;
@@ -1428,6 +1431,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_range_filter() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let (store, _rev) = init_store(db)?;
@@ -1453,6 +1457,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_range_sort() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let (store, _rev) = init_store(db)?;
@@ -1516,6 +1521,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_recover() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let ops = vec![WriteOp::PutScheduledCompactRevision(8)];
@@ -1553,6 +1559,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_txn() -> Result<(), ExecuteError> {
         let txn_req = RequestWrapper::from(TxnRequest {
             compare: vec![Compare {
@@ -1639,6 +1646,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[allow(clippy::too_many_lines)] // TODO: splits this test
+    #[allow(clippy::unwrap_in_result)]
     async fn test_compaction() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory)?;
         let store = init_empty_store(db);

@@ -1335,6 +1335,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unwrap_in_result)]
     fn test_recover() -> Result<(), ExecuteError> {
         let db = DB::open(&EngineConfig::Memory).unwrap();
         let store = init_auth_store(Arc::clone(&db));
