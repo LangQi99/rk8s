@@ -55,7 +55,7 @@ impl Engine {
     #[inline]
     pub async fn apply_snapshot_from_file(
         &self,
-        snapshot_path: impl AsRef<Path>,
+        snapshot_path: &Path,
         tables: &[&'static str],
     ) -> Result<(), EngineError> {
         match *self {

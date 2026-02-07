@@ -43,7 +43,7 @@ impl Layer<RocksEngine> {
     #[inline]
     pub async fn apply_snapshot_from_file(
         &self,
-        snap_path: impl AsRef<Path>,
+        snap_path: &Path,
         tables: &[&'static str],
     ) -> Result<(), EngineError> {
         self.engine
