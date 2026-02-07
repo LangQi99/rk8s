@@ -22,7 +22,7 @@ impl LockedFile {
     pub(super) fn open_rw(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path.as_ref())?;
