@@ -220,7 +220,7 @@ pub struct CompactConfig {
     compact_sleep_interval: Duration,
     /// The auto compactor config
     #[getset(get = "pub")]
-    auto_compact_config: Option<AutoCompactConfig>,
+    auto_compact: Option<AutoCompactConfig>,
 }
 
 impl Default for CompactConfig {
@@ -229,7 +229,7 @@ impl Default for CompactConfig {
         Self {
             compact_batch_size: default_compact_batch_size(),
             compact_sleep_interval: default_compact_sleep_interval(),
-            auto_compact_config: None,
+            auto_compact: None,
         }
     }
 }
@@ -241,12 +241,12 @@ impl CompactConfig {
     pub fn new(
         compact_batch_size: usize,
         compact_sleep_interval: Duration,
-        auto_compact_config: Option<AutoCompactConfig>,
+        auto_compact: Option<AutoCompactConfig>,
     ) -> Self {
         Self {
             compact_batch_size,
             compact_sleep_interval,
-            auto_compact_config,
+            auto_compact,
         }
     }
 }
@@ -307,7 +307,7 @@ pub struct CurpConfig {
 
     /// How many ticks a follower is allowed to miss before it starts a new round of election
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [follower_timeout_ticks, 2 * follower_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`follower_timeout_ticks`, 2 * `follower_timeout_ticks`)
     #[builder(default = "default_follower_timeout_ticks()")]
     #[serde(default = "default_follower_timeout_ticks")]
     pub follower_timeout_ticks: u8,
@@ -316,7 +316,7 @@ pub struct CurpConfig {
     ///
     /// It should be smaller than `follower_timeout_ticks`
     ///
-    /// The actual timeout will be randomized and in between heartbeat_interval * [candidate_timeout_ticks, 2 * candidate_timeout_ticks)
+    /// The actual timeout will be randomized and in between `heartbeat_interval` * [`candidate_timeout_ticks`, 2 * `candidate_timeout_ticks`)
     #[builder(default = "default_candidate_timeout_ticks()")]
     #[serde(default = "default_candidate_timeout_ticks")]
     pub candidate_timeout_ticks: u8,
@@ -690,7 +690,7 @@ pub enum AutoCompactConfig {
 pub enum EngineConfig {
     /// Memory Storage Engine
     Memory,
-    /// RocksDB Storage Engine
+    /// `RocksDB` Storage Engine
     RocksDB(PathBuf),
 }
 
@@ -884,6 +884,7 @@ pub fn file_appender(
 
 /// Xline tracing configuration object
 #[allow(clippy::module_name_repetitions)]
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Getters)]
 pub struct TraceConfig {
     /// Open jaeger online, sending data to jaeger agent directly
@@ -1233,7 +1234,7 @@ mod tests {
             compact_batch_size = 123
             compact_sleep_interval = '5ms'
 
-            [compact.auto_compact_config]
+            [compact.auto_compact]
             mode = 'periodic'
             retention = '10h'
 
@@ -1344,7 +1345,7 @@ mod tests {
             CompactConfig {
                 compact_batch_size: 123,
                 compact_sleep_interval: Duration::from_millis(5),
-                auto_compact_config: Some(AutoCompactConfig::Periodic(Duration::from_secs(
+                auto_compact: Some(AutoCompactConfig::Periodic(Duration::from_secs(
                     10 * 60 * 60
                 )))
             }
@@ -1496,7 +1497,7 @@ mod tests {
 
                 [compact]
 
-                [compact.auto_compact_config]
+                [compact.auto_compact]
                 mode = 'revision'
                 retention = 10000
 
@@ -1516,7 +1517,7 @@ mod tests {
         assert_eq!(
             config.compact,
             CompactConfig {
-                auto_compact_config: Some(AutoCompactConfig::Revision(10000)),
+                auto_compact: Some(AutoCompactConfig::Revision(10000)),
                 ..Default::default()
             }
         );

@@ -42,7 +42,7 @@ impl Engine {
         match engine_type {
             EngineType::Memory => Ok(Engine::Memory(MemoryEngine::new(tables))),
             EngineType::Rocks(path) => Ok(Engine::Rocks(metrics::Layer::new(RocksEngine::new(
-                path, tables,
+                &path, tables,
             )?))),
         }
     }
@@ -55,7 +55,7 @@ impl Engine {
     #[inline]
     pub async fn apply_snapshot_from_file(
         &self,
-        snapshot_path: impl AsRef<Path>,
+        snapshot_path: &Path,
         tables: &[&'static str],
     ) -> Result<(), EngineError> {
         match *self {
