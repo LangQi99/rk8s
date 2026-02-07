@@ -91,6 +91,7 @@ mod test {
 
     use super::*;
     #[tokio::test(flavor = "multi_thread")]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_inject_and_extract() -> Result<(), Box<dyn std::error::Error>> {
         init()?;
         global::set_text_map_propagator(TraceContextPropagator::new());

@@ -149,14 +149,14 @@ impl XlineServer {
             (None, InitialClusterState::New) => {
                 info!("get cluster_info by args");
                 let cluster_info =
-                    ClusterInfo::from_members_map(all_members, self_client_urls, &name);
+                    ClusterInfo::from_members_map(all_members, &self_client_urls, &name);
                 curp_storage.put_cluster_info(&cluster_info)?;
                 Ok(cluster_info)
             }
             (None, InitialClusterState::Existing) => {
                 info!("get cluster_info from remote");
                 let cluster_info = get_cluster_info_from_remote(
-                    &ClusterInfo::from_members_map(all_members, self_client_urls, &name),
+                    &ClusterInfo::from_members_map(all_members, &self_client_urls, &name),
                     &self_peer_urls,
                     cluster_config.name(),
                     *cluster_config.client_config().wait_synced_timeout(),
@@ -331,10 +331,7 @@ impl XlineServer {
     ///
     /// Will return `Err` when `tonic::Server` serve return an error
     #[inline]
-
-
     /// inner start method shared by `start` and `start_from_listener`
-
     async fn start_inner<I1, I2, IO, IE>(&self, xline_incoming: I1, curp_incoming: I2) -> Result<()>
     where
         I1: Stream<Item = Result<IO, IE>> + Send + 'static,
@@ -356,7 +353,7 @@ impl XlineServer {
             });
         if let Err(e) = self.publish(curp_client).await {
             warn!("publish name to cluster failed: {e:?}");
-        };
+        }
         Ok(())
     }
 
@@ -366,7 +363,6 @@ impl XlineServer {
     ///
     /// Will return `Err` when `tonic::Server` serve return an error
     #[inline]
-
     pub async fn start(&self) -> Result<()> {
         let client_listen_urls = self.cluster_config.client_listen_urls();
         let peer_listen_urls = self.cluster_config.peer_listen_urls();
@@ -383,7 +379,6 @@ impl XlineServer {
     ///
     /// Will return `Err` when `tonic::Server` serve return an error
     #[inline]
-
     pub async fn start_from_listener(
         &self,
         xline_listener: tokio::net::TcpListener,
@@ -593,7 +588,6 @@ impl XlineServer {
     }
 
     /// Read tls cert and key from file
-
     async fn read_tls_config(
         tls_config: &TlsConfig,
     ) -> Result<(Option<ClientTlsConfig>, Option<ServerTlsConfig>)> {
@@ -653,7 +647,6 @@ impl XlineServer {
 }
 
 /// Bind multiple addresses
-
 fn bind_addrs(
     addrs: &[String],
 ) -> Result<impl Stream<Item = Result<tokio::net::TcpStream, std::io::Error>> + use<>> {
