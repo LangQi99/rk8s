@@ -53,9 +53,9 @@ impl Engine {
     ///
     /// Return `EngineError` when `RocksDB` returns an error.
     #[inline]
-    pub async fn apply_snapshot_from_file(
+    pub async fn apply_snapshot_from_file<P: AsRef<Path>>(
         &self,
-        snapshot_path: impl AsRef<Path>,
+        snapshot_path: P,
         tables: &[&'static str],
     ) -> Result<(), EngineError> {
         match *self {
