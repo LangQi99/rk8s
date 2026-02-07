@@ -41,9 +41,9 @@ impl Layer<RocksEngine> {
     ///
     /// Return `EngineError` when `RocksDB` returns an error.
     #[inline]
-    pub async fn apply_snapshot_from_file(
+    pub async fn apply_snapshot_from_file<P: AsRef<Path>>(
         &self,
-        snap_path: impl AsRef<Path>,
+        snap_path: P,
         tables: &[&'static str],
     ) -> Result<(), EngineError> {
         self.engine
