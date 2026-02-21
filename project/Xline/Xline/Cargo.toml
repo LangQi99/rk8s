@@ -45,7 +45,7 @@ pbkdf2 = { version = "0.12.2", features = ["simple"] }
 priority-queue = "2.0.2"
 prost = "0.13.3"
 prost-build = "0.13.0"
-quinn = "0.11"
+gm-quic = { git = "https://github.com/genmeta/gm-quic.git" }
 rand = "0.8.5"
 serde = { version = "1.0.204", features = ["derive", "rc"] }
 tempfile = "3"
